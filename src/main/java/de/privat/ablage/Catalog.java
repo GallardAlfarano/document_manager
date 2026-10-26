@@ -1,0 +1,138 @@
+package de.privat.ablage;
+
+import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.web.multipart.MultipartFile;
+import java.nio.file.*;
+import java.io.*;
+import java.time.LocalDate;
+import java.text.Normalizer;
+import java.util.*;
+
+@Service
+public class Catalog {
+    public record Doc(String id, String date, String sender, String main, String type,
+                      String filename, String path, List<String> tags) {}
+    public record Metadata(String date, String sender, String main, String type, List<String> tags) {}
+    public record Check(List<String> missing, List<String> uncatalogued) {}
+    private final JdbcTemplate db;
+    private final TransactionTemplate tx;
+    private final Path root;
+
+    public Catalog(JdbcTemplate db, PlatformTransactionManager manager, @Value("${app.data}") String data) throws IOException {
+        this.db=db; tx=new TransactionTemplate(manager);
+        root=Path.of(data).toAbsolutePath().normalize().resolve("originale");
+        Files.createDirectories(root);
+        db.execute("PRAGMA foreign_keys=ON");
+        db.execute("CREATE TABLE IF NOT EXISTS labels(kind TEXT NOT NULL, name TEXT NOT NULL, key TEXT NOT NULL, PRIMARY KEY(kind,key))");
+        db.execute("CREATE TABLE IF NOT EXISTS documents(id TEXT PRIMARY KEY, date TEXT NOT NULL, sender TEXT NOT NULL, main TEXT NOT NULL, type TEXT NOT NULL, filename TEXT NOT NULL, path TEXT UNIQUE NOT NULL)");
+        db.execute("CREATE TABLE IF NOT EXISTS document_tags(document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE, tag TEXT NOT NULL, PRIMARY KEY(document_id,tag))");
+        for (String s: List.of("Finanzen","Wohnen","Versicherungen","Gesundheit")) label("main",s);
+        for (String s: List.of("Rechnung","Info","Newsletter")) label("type",s);
+        for (String s: List.of("Relevant für Steuererklärung","Todo")) label("extra",s);
+    }
+    public String root() { return root.toString(); }
+    private static String key(String value) { return Normalizer.normalize(value.trim(),Normalizer.Form.NFC).toLowerCase(Locale.ROOT); }
+    static String component(String value) {
+        if(value==null) throw new IllegalArgumentException("Pflichtfeld fehlt.");
+        String s=Normalizer.normalize(value.trim(),Normalizer.Form.NFC);
+        if(s.isBlank() || s.length()>120 || s.matches("(?s).*[\\\\/:*?\"<>|\\p{Cntrl}].*") || s.endsWith(".") || s.equals("..") || s.matches("(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\\..*)?"))
+            throw new IllegalArgumentException("Ungültiger Name: keine Pfadzeichen, reservierten Namen oder mehr als 120 Zeichen verwenden.");
+        return s;
+    }
+    public synchronized String label(String kind,String name) {
+        if(!List.of("main","type","extra","sender").contains(kind)) throw new IllegalArgumentException("Unbekannte Tag-Art.");
+        String value=component(name);
+        if(kind.equals("extra") && value.contains(";")) throw new IllegalArgumentException("Zusätzliche Tags dürfen kein Semikolon enthalten.");
+        db.update("INSERT OR IGNORE INTO labels(kind,name,key) VALUES(?,?,?)",kind,value,key(value));
+        return db.queryForObject("SELECT name FROM labels WHERE kind=? AND key=?",String.class,kind,key(value));
+    }
+    public List<String> labels(String kind) { return db.queryForList("SELECT name FROM labels WHERE kind=? ORDER BY name",String.class,kind); }
+    private Metadata validate(Metadata m) {
+        String date=LocalDate.parse(m.date()).toString();
+        // Validate everything before storing labels.
+        component(m.sender()); component(m.main()); component(m.type());
+        List<String> extras=m.tags()==null?List.of():m.tags().stream().filter(s->!s.isBlank()).map(Catalog::component).toList();
+        return new Metadata(date,label("sender",m.sender()),label("main",m.main()),label("type",m.type()),extras.stream().map(s->label("extra",s)).distinct().toList());
+    }
+    public Doc get(String id) {
+        return db.query("SELECT * FROM documents WHERE id=?", (r,n)-> new Doc(r.getString("id"),r.getString("date"),r.getString("sender"),r.getString("main"),r.getString("type"),r.getString("filename"),r.getString("path"),db.queryForList("SELECT tag FROM document_tags WHERE document_id=? ORDER BY tag",String.class,id)),id)
+            .stream().findFirst().orElseThrow(()->new IllegalArgumentException("Dokument nicht gefunden."));
+    }
+    public List<Doc> search(String query,String period,String main,String type,List<String> tags) {
+        if(period!=null && !period.isBlank()) {
+            if(!period.matches("\\d{4}(-\\d{2})?(-\\d{2})?")) throw new IllegalArgumentException("Datum als JJJJ, JJJJ-MM oder JJJJ-MM-TT eingeben.");
+            if(period.length()==10) LocalDate.parse(period);
+            else if(period.length()==7) java.time.YearMonth.parse(period);
+            else java.time.Year.parse(period);
+        }
+        String q=key(query==null?"":query);
+        return db.queryForList("SELECT id FROM documents ORDER BY date DESC,filename",String.class).stream().map(this::get)
+          .filter(d->q.isEmpty() || key(d.filename()+" "+d.sender()+" "+d.main()+" "+d.type()+" "+String.join(" ",d.tags())).contains(q))
+          .filter(d->period==null || d.date().startsWith(period))
+          .filter(d->main==null || main.isBlank() || key(d.main()).equals(key(main)))
+          .filter(d->type==null || type.isBlank() || key(d.type()).equals(key(type)))
+          .filter(d->tags==null || tags.stream().allMatch(t->d.tags().stream().anyMatch(s->key(s).equals(key(t))))) .toList();
+    }
+    private String relative(Metadata m,String filename) { return m.main()+"/"+m.sender()+"/"+m.date()+" "+filename; }
+    public Path file(String relative) throws IOException {
+        Path p=root.resolve(relative).normalize();
+        if(!p.startsWith(root)) throw new IOException("Ungültiger Dateipfad.");
+        Path current=root;
+        if(Files.isSymbolicLink(root)) throw new IOException("Symbolische Links sind nicht erlaubt.");
+        for(Path c:root.relativize(p)) { current=current.resolve(c); if(Files.isSymbolicLink(current)) throw new IOException("Symbolische Links sind nicht erlaubt."); }
+        return p;
+    }
+    private void tags(String id,List<String> tags) {
+        db.update("DELETE FROM document_tags WHERE document_id=?",id);
+        for(String tag:tags) db.update("INSERT INTO document_tags VALUES(?,?)",id,tag);
+    }
+    public synchronized Doc upload(MultipartFile upload,Metadata raw) throws IOException {
+        if(upload.isEmpty()) throw new IllegalArgumentException("Die Datei ist leer.");
+        String filename=component(upload.getOriginalFilename());
+        Metadata m=validate(raw);
+        String rel=relative(m,filename);
+        Path destination=file(rel);
+        // Niemals bestehende Dateien überschreiben. Bei gleichem Namen stabile ID ergänzen.
+        if(Files.exists(destination) || db.queryForObject("SELECT count(*) FROM documents WHERE path=?",Integer.class,rel)>0) {
+            int dot=filename.lastIndexOf('.');
+            String suffix=" ("+UUID.randomUUID().toString().substring(0,8)+")";
+            filename=dot>0?filename.substring(0,dot)+suffix+filename.substring(dot):filename+suffix;
+            rel=relative(m,filename); destination=file(rel);
+        }
+        String id=UUID.randomUUID().toString(), finalName=filename, finalRel=rel;
+        Files.createDirectories(destination.getParent());
+        Path staged=Files.createTempFile(root,".upload-",".tmp");
+        try {
+            try(var in=upload.getInputStream()) { Files.copy(in,staged,StandardCopyOption.REPLACE_EXISTING); }
+            Files.move(staged,destination);
+            try {
+                tx.executeWithoutResult(status->{db.update("INSERT INTO documents VALUES(?,?,?,?,?,?,?)",id,m.date(),m.sender(),m.main(),m.type(),finalName,finalRel); tags(id,m.tags());});
+            } catch(RuntimeException e) { Files.delete(destination); throw e; }
+        } finally { Files.deleteIfExists(staged); }
+        return get(id);
+    }
+    public synchronized Doc update(String id,Metadata raw,boolean confirmed) throws IOException {
+        Doc old=get(id); Metadata m=validate(raw);
+        String rel=relative(m,old.filename());
+        boolean moving=!old.path().equals(rel);
+        if(moving && !confirmed) throw new IllegalArgumentException("Achtung, du veränderst etwas, was sich aufs Dateisystem auswirkt. Bitte bestätigen.");
+        Path source=file(old.path()), destination=file(rel);
+        if(moving) { Files.createDirectories(destination.getParent()); Files.move(source,destination); }
+        try {
+            tx.executeWithoutResult(status->{db.update("UPDATE documents SET date=?,sender=?,main=?,type=?,path=? WHERE id=?",m.date(),m.sender(),m.main(),m.type(),rel,id);tags(id,m.tags());});
+        } catch(RuntimeException e) { if(moving) Files.move(destination,source); throw e; }
+        return get(id);
+    }
+    public synchronized Check check() throws IOException {
+        Set<String> known=new HashSet<>(db.queryForList("SELECT path FROM documents",String.class));
+        List<String> missing=new ArrayList<>();
+        for(String p:known) { try { if(!Files.isRegularFile(file(p))) missing.add(p); } catch(IOException e) { missing.add(p+" ("+e.getMessage()+")"); } }
+        List<String> unknown;
+        try(var paths=Files.walk(root)) { unknown=paths.filter(p->!p.equals(root)).filter(p->Files.isRegularFile(p,LinkOption.NOFOLLOW_LINKS)||Files.isSymbolicLink(p)).map(root::relativize).map(p->p.toString().replace(java.io.File.separatorChar,'/')).filter(p->!known.contains(p)).sorted().toList(); }
+        Collections.sort(missing); return new Check(missing,unknown);
+    }
+}
