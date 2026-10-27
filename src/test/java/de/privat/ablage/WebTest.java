@@ -41,4 +41,35 @@ class WebTest {
             .param("main","Finanzen").param("type","Rechnung")).andExpect(status().isBadRequest());
         assertThat(catalog.get(doc.id()).date()).isEqualTo("2025-06-10");
     }
+    Catalog.Doc document(String name) throws Exception {
+        return catalog.upload(new MockMultipartFile("files",name,"application/pdf",new byte[]{1,2,3}),
+            new Catalog.Metadata("2025-10-27","ADAC","Finanzen","Rechnung",java.util.List.of()));
+    }
+    @Test void renameThroughBrowserForm() throws Exception {
+        var doc=document("Vorher.pdf");
+        mvc.perform(post("/documents/"+doc.id()+"/edit").with(csrf()).param("date",doc.date()).param("sender",doc.sender())
+            .param("main",doc.main()).param("type",doc.type()).param("filename","Nachher.pdf").param("confirmed","true"))
+            .andExpect(status().is3xxRedirection());
+        assertThat(catalog.get(doc.id()).path()).endsWith("2025-10-27_Nachher.pdf");
+        mvc.perform(get("/documents/"+doc.id()+"/file")).andExpect(status().isOk())
+            .andExpect(header().string("Content-Disposition",org.hamcrest.Matchers.containsString("Nachher.pdf")));
+    }
+    @Test void deletePageDoesNotDeleteAndRequiresCsrfChoiceAndConfirmation() throws Exception {
+        var doc=document("Bestaetigen.pdf");String route="/documents/"+doc.id()+"/delete";
+        mvc.perform(get(route)).andExpect(status().isOk()).andExpect(content().string(org.hamcrest.Matchers.containsString("Originaldatei behalten")));
+        mvc.perform(post(route).param("originalAction","delete").param("confirmed","true")).andExpect(status().isForbidden());
+        mvc.perform(post(route).with(csrf()).param("originalAction","delete")).andExpect(status().isBadRequest());
+        mvc.perform(post(route).with(csrf()).param("originalAction","unknown").param("confirmed","true")).andExpect(status().isBadRequest());
+        mvc.perform(post(route).with(csrf()).param("confirmed","true")).andExpect(status().isBadRequest());
+        assertThat(catalog.get(doc.id()).path()).isEqualTo(doc.path());assertThat(catalog.file(doc.path())).exists();
+    }
+    @Test void deleteInBothModesThroughBrowserForm() throws Exception {
+        for(String action:new String[]{"keep","delete"}) {
+            var doc=document("Loeschen-"+action+".pdf");
+            mvc.perform(post("/documents/"+doc.id()+"/delete").with(csrf()).param("originalAction",action).param("confirmed","true"))
+                .andExpect(status().is3xxRedirection());
+            assertThatThrownBy(()->catalog.get(doc.id())).isInstanceOf(IllegalArgumentException.class);
+            assertThat(java.nio.file.Files.exists(catalog.file(doc.path()))).isEqualTo(action.equals("keep"));
+        }
+    }
 }

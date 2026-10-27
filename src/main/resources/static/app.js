@@ -7,7 +7,7 @@ document.querySelectorAll('[data-tag]').forEach(button => button.addEventListene
 }));
 const form=document.getElementById('editForm');
 if(form) form.addEventListener('submit', event => {
-  const changed=['date','sender','main'].some(k=>form.elements[k].value.trim()!==form.dataset[k]);
+  const changed=['date','sender','main','filename'].some(k=>form.elements[k].value.trim()!==form.dataset[k]);
   if(changed && !window.confirm('Achtung, du veränderst etwas, was sich aufs Dateisystem auswirkt. Die Originaldatei wird verschoben bzw. umbenannt. Okay?')) { event.preventDefault(); return; }
   form.elements.confirmed.value=changed?'true':'false';
 });

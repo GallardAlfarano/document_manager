@@ -18,6 +18,7 @@ public class Catalog {
                       String filename, String path, List<String> tags) {}
     public record Metadata(String date, String sender, String main, String type, List<String> tags) {}
     public record Check(List<String> missing, List<String> uncatalogued) {}
+    public record DeleteResult(String retainedBackup) {}
     private final JdbcTemplate db;
     private final TransactionTemplate tx;
     private final Path root;
@@ -77,7 +78,7 @@ public class Catalog {
           .filter(d->type==null || type.isBlank() || key(d.type()).equals(key(type)))
           .filter(d->tags==null || tags.stream().allMatch(t->d.tags().stream().anyMatch(s->key(s).equals(key(t))))) .toList();
     }
-    private String relative(Metadata m,String filename) { return m.main()+"/"+m.sender()+"/"+m.date()+" "+filename; }
+    private String relative(Metadata m,String filename) { return m.main()+"/"+m.sender()+"/"+m.date()+"_"+filename; }
     public Path file(String relative) throws IOException {
         Path p=root.resolve(relative).normalize();
         if(!p.startsWith(root)) throw new IOException("Ungültiger Dateipfad.");
@@ -116,16 +117,78 @@ public class Catalog {
         return get(id);
     }
     public synchronized Doc update(String id,Metadata raw,boolean confirmed) throws IOException {
-        Doc old=get(id); Metadata m=validate(raw);
-        String rel=relative(m,old.filename());
+        return update(id,raw,get(id).filename(),confirmed);
+    }
+    public synchronized Doc update(String id,Metadata raw,String filename,boolean confirmed) throws IOException {
+        Doc old=get(id);
+        String name=component(filename);
+        Metadata m=validate(raw);
+        boolean pathChanged=!old.filename().equals(name) || !old.date().equals(m.date())
+            || !old.sender().equals(m.sender()) || !old.main().equals(m.main());
+        // Bestehende Pfade im alten Format bleiben bei reinen Tag-/Typänderungen erhalten.
+        String rel=pathChanged?relative(m,name):old.path();
         boolean moving=!old.path().equals(rel);
         if(moving && !confirmed) throw new IllegalArgumentException("Achtung, du veränderst etwas, was sich aufs Dateisystem auswirkt. Bitte bestätigen.");
         Path source=file(old.path()), destination=file(rel);
-        if(moving) { Files.createDirectories(destination.getParent()); Files.move(source,destination); }
+        if(moving) {
+            if(db.queryForObject("SELECT count(*) FROM documents WHERE path=? AND id<>?",Integer.class,rel,id)>0)
+                throw new IllegalArgumentException("Der Zielpfad ist bereits katalogisiert. Bitte einen anderen Dateinamen wählen.");
+            if(Files.exists(destination,LinkOption.NOFOLLOW_LINKS))
+                throw new FileAlreadyExistsException(destination.toString());
+            Files.createDirectories(destination.getParent());
+            // Kein REPLACE_EXISTING und kein ATOMIC_MOVE: ein belegtes Ziel wird nicht ersetzt.
+            Files.move(source,destination);
+        }
         try {
-            tx.executeWithoutResult(status->{db.update("UPDATE documents SET date=?,sender=?,main=?,type=?,path=? WHERE id=?",m.date(),m.sender(),m.main(),m.type(),rel,id);tags(id,m.tags());});
+            tx.executeWithoutResult(status->{db.update("UPDATE documents SET date=?,sender=?,main=?,type=?,filename=?,path=? WHERE id=?",m.date(),m.sender(),m.main(),m.type(),name,rel,id);tags(id,m.tags());});
         } catch(RuntimeException e) { if(moving) Files.move(destination,source); throw e; }
         return get(id);
+    }
+    public synchronized DeleteResult delete(String id,boolean deleteOriginal,boolean confirmed) throws IOException {
+        if(!confirmed) throw new IllegalArgumentException("Bitte das Löschen ausdrücklich bestätigen.");
+        Doc old=get(id);
+        Path source=null, backup=null;
+        if(deleteOriginal) {
+            source=file(old.path());
+            boolean present;
+            try {
+                var attributes=Files.readAttributes(source,java.nio.file.attribute.BasicFileAttributes.class,LinkOption.NOFOLLOW_LINKS);
+                if(!attributes.isRegularFile()) throw new IOException("Die Originaldatei ist keine reguläre Datei.");
+                present=true;
+            } catch(NoSuchFileException e) { present=false; }
+            if(present) {
+                // Die Kopie ermöglicht Wiederherstellung auch bei einem fehlgeschlagenen DB-Commit.
+                backup=Files.createTempFile(root,".delete-backup-",".tmp");
+                try { Files.copy(source,backup,StandardCopyOption.REPLACE_EXISTING); }
+                catch(IOException e) { try { Files.deleteIfExists(backup); } catch(IOException cleanup) { e.addSuppressed(cleanup); } throw e; }
+            }
+        }
+        final Path original=source, recovery=backup;
+        try {
+            tx.executeWithoutResult(status->{
+                db.update("DELETE FROM document_tags WHERE document_id=?",id);
+                db.update("DELETE FROM documents WHERE id=?",id);
+                if(recovery!=null) {
+                    try { Files.delete(original); }
+                    catch(IOException e) { throw new UncheckedIOException(e); }
+                }
+            });
+        } catch(RuntimeException e) {
+            if(recovery!=null) {
+                try {
+                    // Niemals eine zwischenzeitlich neu angelegte Datei überschreiben.
+                    if(!Files.exists(original,LinkOption.NOFOLLOW_LINKS)) Files.move(recovery,original);
+                    else Files.delete(recovery);
+                } catch(IOException restore) { e.addSuppressed(restore); }
+            }
+            if(e instanceof UncheckedIOException io) throw io.getCause();
+            throw e;
+        }
+        if(recovery!=null) {
+            try { Files.delete(recovery); }
+            catch(IOException e) { return new DeleteResult(root.relativize(recovery).toString()); }
+        }
+        return new DeleteResult(null);
     }
     public synchronized Check check() throws IOException {
         Set<String> known=new HashSet<>(db.queryForList("SELECT path FROM documents",String.class));

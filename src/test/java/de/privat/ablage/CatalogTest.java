@@ -24,7 +24,7 @@ class CatalogTest {
     MockMultipartFile upload() { return new MockMultipartFile("files","Kontoauszug.pdf","application/pdf",new byte[]{1,2,3,4}); }
     @Test void originalsUseReadablePathsAndKeepBytes() throws Exception {
         var d=catalog.upload(upload(),metadata());
-        assertThat(d.path().replace('\\','/')).isEqualTo("Finanzen/Sparkasse/2025-06-10 Kontoauszug.pdf");
+        assertThat(d.path().replace('\\','/')).isEqualTo("Finanzen/Sparkasse/2025-06-10_Kontoauszug.pdf");
         assertThat(Files.readAllBytes(catalog.file(d.path()))).containsExactly(new byte[]{1,2,3,4});
         assertThat(catalog.get(d.id()).tags()).containsExactly("Relevant für Steuererklärung");
     }
@@ -66,7 +66,7 @@ class CatalogTest {
     @Test void targetCollisionLeavesCatalogAndBothFilesUntouched() throws Exception {
         var old=catalog.upload(upload(),metadata());
         var changed=new Catalog.Metadata("2026-01-01","Sparkasse","Finanzen","Rechnung",List.of());
-        Path target=catalog.file("Finanzen/Sparkasse/2026-01-01 Kontoauszug.pdf");Files.writeString(target,"anderes Original");
+        Path target=catalog.file("Finanzen/Sparkasse/2026-01-01_Kontoauszug.pdf");Files.writeString(target,"anderes Original");
         assertThatThrownBy(()->catalog.update(old.id(),changed,true)).isInstanceOf(FileAlreadyExistsException.class);
         assertThat(catalog.get(old.id()).path()).isEqualTo(old.path());assertThat(Files.readString(target)).isEqualTo("anderes Original");
     }
@@ -108,5 +108,105 @@ class CatalogTest {
     @Test void catalogSurvivesRestart() throws Exception {
         var doc=catalog.upload(upload(),metadata());
         setup();assertThat(catalog.get(doc.id()).path()).isEqualTo(doc.path());
+    }
+    @Test void renameKeepsDatePrefixAndFileBytes() throws Exception {
+        var old=catalog.upload(upload(),metadata());
+        var renamed=catalog.update(old.id(),metadata(),"Neue Rechnung.pdf",true);
+        assertThat(renamed.filename()).isEqualTo("Neue Rechnung.pdf");
+        assertThat(renamed.path()).isEqualTo("Finanzen/Sparkasse/2025-06-10_Neue Rechnung.pdf");
+        assertThat(catalog.file(old.path())).doesNotExist();
+        assertThat(Files.readAllBytes(catalog.file(renamed.path()))).containsExactly(new byte[]{1,2,3,4});
+    }
+    @Test void renameRequiresConfirmationAndRejectsInvalidNames() throws Exception {
+        var old=catalog.upload(upload(),metadata());
+        assertThatThrownBy(()->catalog.update(old.id(),metadata(),"Anders.pdf",false)).isInstanceOf(IllegalArgumentException.class);
+        for(String name:List.of("../secret.pdf","","NUL","folder/file.pdf"))
+            assertThatThrownBy(()->catalog.update(old.id(),metadata(),name,true)).isInstanceOf(IllegalArgumentException.class);
+        assertThat(catalog.get(old.id()).filename()).isEqualTo(old.filename());
+        assertThat(catalog.file(old.path())).exists();
+    }
+    @Test void renameNeverOverwritesUncataloguedFiles() throws Exception {
+        var old=catalog.upload(upload(),metadata());
+        Path occupied=catalog.file("Finanzen/Sparkasse/2025-06-10_Belegt.pdf");Files.writeString(occupied,"unbekanntes Original");
+        assertThatThrownBy(()->catalog.update(old.id(),metadata(),"Belegt.pdf",true)).isInstanceOf(FileAlreadyExistsException.class);
+        assertThat(Files.readString(occupied)).isEqualTo("unbekanntes Original");
+        assertThat(catalog.get(old.id()).path()).isEqualTo(old.path());
+        assertThat(catalog.file(old.path())).exists();
+    }
+    @Test void renameCannotStealCataloguedPathWhenItsFileIsMissing() throws Exception {
+        var first=catalog.upload(upload(),metadata());
+        var second=catalog.upload(new MockMultipartFile("files","Belegt.pdf","application/pdf",new byte[]{9}),metadata());
+        Files.delete(catalog.file(second.path()));
+        assertThatThrownBy(()->catalog.update(first.id(),metadata(),second.filename(),true)).isInstanceOf(IllegalArgumentException.class);
+        assertThat(catalog.get(first.id()).path()).isEqualTo(first.path());
+        assertThat(catalog.file(first.path())).exists();assertThat(catalog.file(second.path())).doesNotExist();
+    }
+    @Test void failedRenameRestoresNamePathAndOriginal() throws Exception {
+        var old=catalog.upload(upload(),metadata());
+        db.execute("CREATE TRIGGER reject_rename BEFORE UPDATE ON documents BEGIN SELECT RAISE(ABORT, 'test'); END");
+        assertThatThrownBy(()->catalog.update(old.id(),metadata(),"Neu.pdf",true)).isInstanceOf(RuntimeException.class);
+        assertThat(catalog.get(old.id()).filename()).isEqualTo(old.filename());
+        assertThat(catalog.file(old.path())).exists();assertThat(catalog.check().uncatalogued()).isEmpty();
+    }
+    @Test void legacyPathsStayUntilPathRelevantChanges() throws Exception {
+        var old=catalog.upload(upload(),metadata());
+        String legacy=old.path().replace("2025-06-10_","2025-06-10 ");
+        Files.move(catalog.file(old.path()),catalog.file(legacy));
+        db.update("UPDATE documents SET path=? WHERE id=?",legacy,old.id());
+        var onlyTags=new Catalog.Metadata(old.date(),old.sender(),old.main(),"Info",List.of("Todo"));
+        assertThat(catalog.update(old.id(),onlyTags,old.filename(),false).path()).isEqualTo(legacy);
+        assertThat(catalog.update(old.id(),onlyTags,"Neu.pdf",true).path()).endsWith("2025-06-10_Neu.pdf");
+    }
+    @Test void deletingOnlyCatalogKeepsOriginalAndReportsItAsUnknown() throws Exception {
+        var old=catalog.upload(upload(),metadata());
+        catalog.delete(old.id(),false,true);
+        assertThatThrownBy(()->catalog.get(old.id())).isInstanceOf(IllegalArgumentException.class);
+        assertThat(Files.readAllBytes(catalog.file(old.path()))).containsExactly(new byte[]{1,2,3,4});
+        assertThat(catalog.check().uncatalogued()).containsExactly(old.path());
+        assertThat(db.queryForObject("SELECT count(*) FROM document_tags WHERE document_id=?",Integer.class,old.id())).isZero();
+        assertThat(catalog.labels("extra")).contains("Relevant für Steuererklärung");
+    }
+    @Test void deletingWithOriginalRemovesOnlySelectedDocument() throws Exception {
+        var old=catalog.upload(upload(),metadata());var other=catalog.upload(upload(),metadata());
+        assertThat(catalog.delete(old.id(),true,true).retainedBackup()).isNull();
+        assertThatThrownBy(()->catalog.get(old.id())).isInstanceOf(IllegalArgumentException.class);
+        assertThat(catalog.file(old.path())).doesNotExist();assertThat(catalog.file(other.path())).exists();
+        assertThat(catalog.get(other.id()).tags()).containsExactly("Relevant für Steuererklärung");
+        assertThat(catalog.check().missing()).isEmpty();assertThat(catalog.check().uncatalogued()).isEmpty();
+    }
+    @Test void deletionRequiresExplicitConfirmationInBothModes() throws Exception {
+        var old=catalog.upload(upload(),metadata());
+        for(boolean deleteFile:List.of(false,true))
+            assertThatThrownBy(()->catalog.delete(old.id(),deleteFile,false)).isInstanceOf(IllegalArgumentException.class);
+        assertThat(catalog.get(old.id()).path()).isEqualTo(old.path());assertThat(catalog.file(old.path())).exists();
+    }
+    @Test void deletionAlsoWorksWhenOriginalIsAlreadyMissing() throws Exception {
+        for(boolean deleteFile:List.of(false,true)) {
+            var old=catalog.upload(upload(),metadata());Files.delete(catalog.file(old.path()));
+            catalog.delete(old.id(),deleteFile,true);
+            assertThatThrownBy(()->catalog.get(old.id())).isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+    @Test void failedDeleteKeepsCatalogOriginalAndTagAssociations() throws Exception {
+        var old=catalog.upload(upload(),metadata());
+        db.execute("CREATE TRIGGER reject_delete BEFORE DELETE ON documents BEGIN SELECT RAISE(ABORT, 'test'); END");
+        assertThatThrownBy(()->catalog.delete(old.id(),true,true)).isInstanceOf(RuntimeException.class);
+        assertThat(catalog.get(old.id()).tags()).containsExactly("Relevant für Steuererklärung");
+        assertThat(Files.readAllBytes(catalog.file(old.path()))).containsExactly(new byte[]{1,2,3,4});
+        assertThat(catalog.check().uncatalogued()).isEmpty();
+    }
+    @Test void failedDeleteCommitRestoresOriginalFromBackup() throws Exception {
+        var old=catalog.upload(upload(),metadata());
+        var manager=new DataSourceTransactionManager(db.getDataSource()) {
+            @Override protected void doCommit(org.springframework.transaction.support.DefaultTransactionStatus status) {
+                throw new org.springframework.transaction.TransactionSystemException("Simulierter Commitfehler");
+            }
+        };
+        manager.setRollbackOnCommitFailure(true);
+        var failing=new Catalog(db,manager,temp.toString());
+        assertThatThrownBy(()->failing.delete(old.id(),true,true)).isInstanceOf(RuntimeException.class);
+        assertThat(catalog.get(old.id()).tags()).containsExactly("Relevant für Steuererklärung");
+        assertThat(Files.readAllBytes(catalog.file(old.path()))).containsExactly(new byte[]{1,2,3,4});
+        assertThat(catalog.check().uncatalogued()).isEmpty();
     }
 }

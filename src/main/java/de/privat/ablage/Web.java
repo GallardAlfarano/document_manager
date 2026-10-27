@@ -37,9 +37,22 @@ public class Web {
     }
     @GetMapping("/documents/{id}/edit") String edit(@PathVariable String id,Model model) { model.addAttribute("doc",catalog.get(id));return "edit"; }
     @PostMapping("/documents/{id}/edit") String edit(@PathVariable String id,@RequestParam String date,@RequestParam String sender,@RequestParam String main,
-        @RequestParam String type,@RequestParam(defaultValue="") String tags,@RequestParam(defaultValue="false") boolean confirmed,RedirectAttributes flash) throws Exception {
-        catalog.update(id,new Catalog.Metadata(date,sender,main,type,tags(tags)),confirmed);
+        @RequestParam String type,@RequestParam(required=false) String filename,@RequestParam(defaultValue="") String tags,@RequestParam(defaultValue="false") boolean confirmed,RedirectAttributes flash) throws Exception {
+        String name=filename==null?catalog.get(id).filename():filename;
+        catalog.update(id,new Catalog.Metadata(date,sender,main,type,tags(tags)),name,confirmed);
         flash.addFlashAttribute("notice","Änderungen gespeichert."); return "redirect:/";
+    }
+    @GetMapping("/documents/{id}/delete") String delete(@PathVariable String id,Model model) {
+        model.addAttribute("doc",catalog.get(id));return "delete";
+    }
+    @PostMapping("/documents/{id}/delete") String delete(@PathVariable String id,@RequestParam String originalAction,
+        @RequestParam(defaultValue="false") boolean confirmed,RedirectAttributes flash) throws Exception {
+        if(!List.of("keep","delete").contains(originalAction)) throw new IllegalArgumentException("Bitte wählen, ob die Originaldatei erhalten bleiben soll.");
+        boolean removeFile=originalAction.equals("delete");
+        var result=catalog.delete(id,removeFile,confirmed);
+        String notice=removeFile?"Katalogeintrag und Originaldatei gelöscht (falls vorhanden).":"Katalogeintrag gelöscht. Die Originaldatei bleibt erhalten und wird im Dateiabgleich als nicht katalogisiert angezeigt.";
+        if(result.retainedBackup()!=null) notice+=" Eine temporäre Sicherungskopie konnte nicht entfernt werden: "+result.retainedBackup()+". Bitte im Dateiabgleich prüfen und manuell entfernen.";
+        flash.addFlashAttribute("notice",notice);return "redirect:/";
     }
     @GetMapping("/documents/{id}/file") ResponseEntity<FileSystemResource> download(@PathVariable String id) throws Exception {
         var doc=catalog.get(id);var path=catalog.file(doc.path());
@@ -54,7 +67,8 @@ public class Web {
         catalog.label(kind,name);flash.addFlashAttribute("notice","Eintrag angelegt bzw. vorhandene Schreibweise wiederverwendet.");return "redirect:/tags";
     }
     private static String message(Exception e) {
-        return e instanceof IllegalArgumentException || e instanceof java.time.DateTimeException ? e.getMessage() : "Speichern fehlgeschlagen. Prüfe Dateinamen, Schreibrechte und Dateiabgleich.";
+        if(e instanceof FileAlreadyExistsException) return "Der Zielname ist bereits belegt. Es wurde nichts überschrieben.";
+        return e instanceof IllegalArgumentException || e instanceof java.time.DateTimeException ? e.getMessage() : "Vorgang fehlgeschlagen. Prüfe Dateinamen, Schreibrechte und Dateiabgleich.";
     }
     @ExceptionHandler(Exception.class) String error(Exception e,Model model,jakarta.servlet.http.HttpServletResponse response) {
         response.setStatus(400);model.addAttribute("error",message(e));return "error";
