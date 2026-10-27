@@ -19,3 +19,10 @@ if(zone && files) {
   zone.addEventListener('dragleave',()=>zone.classList.remove('dragging'));
   zone.addEventListener('drop',event=>{event.preventDefault();zone.classList.remove('dragging');files.files=event.dataTransfer.files;show();});
 }
+
+const undated=document.getElementById('undated'), period=document.getElementById('period');
+if(undated && period) {
+  const togglePeriod=()=>{period.disabled=undated.checked;};
+  undated.addEventListener('change',togglePeriod);
+  togglePeriod();
+}

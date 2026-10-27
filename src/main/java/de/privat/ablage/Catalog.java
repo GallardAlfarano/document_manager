@@ -103,7 +103,8 @@ public class Catalog {
     }
     public List<String> labels(String kind) { return db.queryForList("SELECT name FROM labels WHERE kind=? ORDER BY name",String.class,kind); }
     private Metadata validate(Metadata m) {
-        String date=LocalDate.parse(m.date()).toString();
+        // Ein leeres Datum bleibt mit vorhandenen NOT-NULL-Schemata kompatibel.
+        String date=m.date()==null || m.date().isBlank()?"":LocalDate.parse(m.date().trim()).toString();
         // Validate everything before storing labels.
         component(m.sender()); component(m.main()); component(m.type());
         List<String> extras=m.tags()==null?List.of():m.tags().stream().filter(s->!s.isBlank()).map(Catalog::component).toList();
@@ -114,21 +115,28 @@ public class Catalog {
             .stream().findFirst().orElseThrow(()->new IllegalArgumentException("Dokument nicht gefunden."));
     }
     public List<Doc> search(String query,String period,String main,String type,List<String> tags) {
-        if(period!=null && !period.isBlank()) {
-            if(!period.matches("\\d{4}(-\\d{2})?(-\\d{2})?")) throw new IllegalArgumentException("Datum als JJJJ, JJJJ-MM oder JJJJ-MM-TT eingeben.");
-            if(period.length()==10) LocalDate.parse(period);
-            else if(period.length()==7) java.time.YearMonth.parse(period);
-            else java.time.Year.parse(period);
+        return search(query,period,main,type,tags,false);
+    }
+    public List<Doc> search(String query,String period,String main,String type,List<String> tags,boolean undated) {
+        String selectedPeriod=period==null?"":period.trim();
+        // "Ohne Datum" und ein Zeitraum sind alternativ, auch ohne JavaScript.
+        if(!undated && !selectedPeriod.isEmpty()) {
+            if(!selectedPeriod.matches("\\d{4}(-\\d{2})?(-\\d{2})?")) throw new IllegalArgumentException("Datum als JJJJ, JJJJ-MM oder JJJJ-MM-TT eingeben.");
+            if(selectedPeriod.length()==10) LocalDate.parse(selectedPeriod);
+            else if(selectedPeriod.length()==7) java.time.YearMonth.parse(selectedPeriod);
+            else java.time.Year.parse(selectedPeriod);
         }
         String q=key(query==null?"":query);
         return db.queryForList("SELECT id FROM documents ORDER BY date DESC,filename",String.class).stream().map(this::get)
           .filter(d->q.isEmpty() || key(d.filename()+" "+d.sender()+" "+d.main()+" "+d.type()+" "+String.join(" ",d.tags())).contains(q))
-          .filter(d->period==null || d.date().startsWith(period))
+          .filter(d->undated ? d.date().isEmpty() : (selectedPeriod.isEmpty() || d.date().startsWith(selectedPeriod)))
           .filter(d->main==null || main.isBlank() || key(d.main()).equals(key(main)))
           .filter(d->type==null || type.isBlank() || key(d.type()).equals(key(type)))
           .filter(d->tags==null || tags.stream().allMatch(t->d.tags().stream().anyMatch(s->key(s).equals(key(t))))) .toList();
     }
-    private String relative(Metadata m,String filename) { return m.main()+"/"+m.sender()+"/"+m.date()+"_"+filename; }
+    private String relative(Metadata m,String filename) {
+        return m.main()+"/"+m.sender()+"/"+(m.date().isEmpty()?"":m.date()+"_")+filename;
+    }
     public Path file(String relative) throws IOException {
         Path p=root.resolve(relative).normalize();
         if(!p.startsWith(root)) throw new IOException("Ungültiger Dateipfad.");

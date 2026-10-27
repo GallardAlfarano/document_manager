@@ -292,4 +292,70 @@ class CatalogTest {
         assertThatThrownBy(()->catalog.upload(upload(),metadata())).isInstanceOf(Catalog.DuplicateDocumentException.class);
         assertThat(catalog.get(doc.id()).sha256()).isEqualTo(doc.sha256());
     }
+    @Test void uploadAcceptsMissingBlankAndWhitespaceDatesWithoutPrefix() throws Exception {
+        String[] dates={null,"","   "};
+        for(int i=0;i<dates.length;i++) {
+            var raw=new Catalog.Metadata(dates[i],"Sparkasse","Finanzen","Info",List.of());
+            var doc=catalog.upload(new MockMultipartFile("files","Ohne Datum "+i+".pdf","application/pdf",new byte[]{(byte)(70+i)}),raw);
+            assertThat(doc.date()).isEmpty();
+            assertThat(doc.path()).isEqualTo("Finanzen/Sparkasse/Ohne Datum "+i+".pdf");
+            assertThat(db.queryForObject("SELECT date FROM documents WHERE id=?",String.class,doc.id())).isEmpty();
+        }
+        setup();assertThat(catalog.search("","","","",List.of(),true)).hasSize(3);
+    }
+    @Test void undatedFilterCombinesWithOtherFiltersAndExcludesDatedDocuments() throws Exception {
+        var undated=new Catalog.Metadata(null,"Sparkasse","Finanzen","Rechnung",List.of("Relevant für Steuererklärung"));
+        var one=catalog.upload(upload(),undated);
+        catalog.upload(differentUpload(),new Catalog.Metadata("","Sparkasse","Wohnen","Info",List.of()));
+        var dated=catalog.upload(new MockMultipartFile("files","Datiert.pdf","application/pdf",new byte[]{71,72}),metadata());
+        assertThat(catalog.search("","","","",List.of())).hasSize(3);
+        assertThat(catalog.search("Sparkasse","","Finanzen","Rechnung",List.of("Relevant für Steuererklärung"),true)).containsExactly(one);
+        assertThat(catalog.search("","2025","","",List.of())).containsExactly(dated);
+        assertThat(catalog.search("","2025-06","","",List.of())).containsExactly(dated);
+        assertThat(catalog.search("","2025-06-10","","",List.of())).containsExactly(dated);
+        assertThat(catalog.search("","2025","","",List.of(),true)).hasSize(2);
+        assertThat(catalog.search("","ignored","","",List.of(),true)).hasSize(2);
+    }
+    @Test void addingAndRemovingDateRequiresConfirmationAndPreservesOriginalAndHash() throws Exception {
+        var without=new Catalog.Metadata("","Sparkasse","Finanzen","Rechnung",List.of("Relevant für Steuererklärung"));
+        var old=catalog.upload(upload(),without);
+        assertThatThrownBy(()->catalog.update(old.id(),metadata(),false)).isInstanceOf(IllegalArgumentException.class);
+        var dated=catalog.update(old.id(),metadata(),true);
+        assertThat(dated.path()).isEqualTo("Finanzen/Sparkasse/2025-06-10_Kontoauszug.pdf");
+        assertThat(catalog.file(old.path())).doesNotExist();
+        assertThatThrownBy(()->catalog.update(old.id(),without,false)).isInstanceOf(IllegalArgumentException.class);
+        var cleared=catalog.update(old.id(),without,true);
+        assertThat(cleared.path()).isEqualTo(old.path());assertThat(cleared.date()).isEmpty();
+        assertThat(cleared.sha256()).isEqualTo(old.sha256());
+        assertThat(Files.readAllBytes(catalog.file(cleared.path()))).containsExactly(new byte[]{1,2,3,4});
+        assertThat(catalog.file(dated.path())).doesNotExist();
+    }
+    @Test void undatedTagOnlyEditDoesNotMoveOriginalOrRequireConfirmation() throws Exception {
+        var raw=new Catalog.Metadata("","Sparkasse","Finanzen","Rechnung",List.of());
+        var old=catalog.upload(upload(),raw);
+        var changed=catalog.update(old.id(),new Catalog.Metadata(null,"Sparkasse","Finanzen","Info",List.of("Todo")),false);
+        assertThat(changed.path()).isEqualTo(old.path());assertThat(changed.date()).isEmpty();
+        assertThat(changed.tags()).containsExactly("Todo");
+    }
+    @Test void removingDateCannotOverwriteAnExistingUndatedFile() throws Exception {
+        var old=catalog.upload(upload(),metadata());
+        Path target=catalog.file("Finanzen/Sparkasse/Kontoauszug.pdf");Files.writeString(target,"anderes Original");
+        var without=new Catalog.Metadata("","Sparkasse","Finanzen","Rechnung",List.of());
+        assertThatThrownBy(()->catalog.update(old.id(),without,true)).isInstanceOf(FileAlreadyExistsException.class);
+        assertThat(catalog.get(old.id()).date()).isEqualTo(old.date());
+        assertThat(catalog.file(old.path())).exists();assertThat(Files.readString(target)).isEqualTo("anderes Original");
+    }
+    @Test void nonEmptyInvalidDatesAreStillRejectedAndDoNotLeaveFiles() {
+        for(String date:List.of("2025-02-30","kein Datum","2025-13-01"))
+            assertThatThrownBy(()->catalog.upload(upload(),new Catalog.Metadata(date,"Sparkasse","Finanzen","Info",List.of())))
+                .isInstanceOf(java.time.DateTimeException.class);
+        assertThat(db.queryForObject("SELECT count(*) FROM documents",Integer.class)).isZero();
+        assertThatCode(()->assertThat(catalog.check().uncatalogued()).isEmpty()).doesNotThrowAnyException();
+    }
+    @Test void duplicateRecognitionAlsoWorksWithoutDate() throws Exception {
+        var raw=new Catalog.Metadata(null,"Sparkasse","Finanzen","Info",List.of());
+        var old=catalog.upload(upload(),raw);
+        assertThatThrownBy(()->catalog.upload(upload(),metadata())).isInstanceOfSatisfying(Catalog.DuplicateDocumentException.class,
+            e->assertThat(e.existing().id()).isEqualTo(old.id()));
+    }
 }

@@ -186,4 +186,38 @@ class WebTest {
             .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("<iframe"))));
         mvc.perform(get("/documents/"+doc.id()+"/preview")).andExpect(status().isNotFound());
     }
+    @Test void uploadWithoutDateAndLaterAddOrClearDateThroughForm() throws Exception {
+        mvc.perform(multipart("/upload").file(new MockMultipartFile("files","OptionalesDatum.pdf","application/pdf",new byte[]{81,82,83}))
+            .param("sender","Datumstest").param("main","Finanzen").param("type","Info").with(csrf()))
+            .andExpect(status().is3xxRedirection());
+        var doc=catalog.search("OptionalesDatum.pdf","","","",java.util.List.of(),true).getFirst();
+        assertThat(doc.date()).isEmpty();assertThat(doc.path()).endsWith("/OptionalesDatum.pdf");
+        String edit="/documents/"+doc.id()+"/edit";
+        mvc.perform(post(edit).with(csrf()).param("sender",doc.sender()).param("main",doc.main()).param("type",doc.type())
+            .param("date","2026-10-27")).andExpect(status().isBadRequest());
+        mvc.perform(post(edit).with(csrf()).param("sender",doc.sender()).param("main",doc.main()).param("type",doc.type())
+            .param("date","2026-10-27").param("confirmed","true")).andExpect(status().is3xxRedirection());
+        assertThat(catalog.get(doc.id()).path()).endsWith("/2026-10-27_OptionalesDatum.pdf");
+        // Kein date-Parameter entspricht ebenfalls einem leeren Datum.
+        mvc.perform(post(edit).with(csrf()).param("sender",doc.sender()).param("main",doc.main()).param("type",doc.type())
+            .param("confirmed","true")).andExpect(status().is3xxRedirection());
+        assertThat(catalog.get(doc.id()).path()).isEqualTo(doc.path());
+        mvc.perform(get(edit)).andExpect(status().isOk()).andExpect(content().string(org.hamcrest.Matchers.containsString("Datum (optional)")));
+        mvc.perform(get("/documents/"+doc.id()+"/delete")).andExpect(status().isOk()).andExpect(content().string(org.hamcrest.Matchers.containsString("Ohne Datum")));
+    }
+    @Test void undatedFilterIsAvailableInBrowserAndCombinesWithSearchAndTags() throws Exception {
+        var undated=catalog.upload(new MockMultipartFile("files","FilterDatum ohne.pdf","application/pdf",new byte[]{84,85}),
+            new Catalog.Metadata("","Datumsfilter","Finanzen","Info",java.util.List.of("Todo")));
+        var dated=catalog.upload(new MockMultipartFile("files","FilterDatum mit.pdf","application/pdf",new byte[]{86,87}),
+            new Catalog.Metadata("2025-06-10","Datumsfilter","Finanzen","Info",java.util.List.of("Todo")));
+        mvc.perform(get("/").param("q","FilterDatum").param("undated","true").param("period","2025").param("tags","Todo"))
+            .andExpect(status().isOk()).andExpect(model().attribute("docs",java.util.List.of(undated)))
+            .andExpect(model().attribute("undated",true))
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("Nur Einträge ohne Datum")))
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("<td>Ohne Datum</td>")));
+        mvc.perform(get("/").param("q","FilterDatum").param("period","2025"))
+            .andExpect(status().isOk()).andExpect(model().attribute("docs",java.util.List.of(dated)));
+        mvc.perform(get("/").param("q","FilterDatum"))
+            .andExpect(status().isOk()).andExpect(model().attribute("docs",org.hamcrest.Matchers.hasSize(2)));
+    }
 }

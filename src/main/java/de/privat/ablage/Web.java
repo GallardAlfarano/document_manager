@@ -22,13 +22,13 @@ public class Web {
     }
     static List<String> tags(String value) { return value==null?List.of():Arrays.stream(value.split(";")).map(String::trim).filter(s->!s.isEmpty()).toList(); }
     @GetMapping("/") String index(@RequestParam(defaultValue="") String q,@RequestParam(defaultValue="") String period,
-        @RequestParam(defaultValue="") String main,@RequestParam(defaultValue="") String type,@RequestParam(defaultValue="") String tags,Model model) {
-        model.addAttribute("docs",catalog.search(q,period,main,type,tags(tags)));
-        model.addAttribute("q",q); model.addAttribute("period",period);model.addAttribute("main",main);model.addAttribute("type",type);model.addAttribute("tagQuery",tags);
+        @RequestParam(defaultValue="") String main,@RequestParam(defaultValue="") String type,@RequestParam(defaultValue="") String tags,@RequestParam(defaultValue="false") boolean undated,Model model) {
+        model.addAttribute("docs",catalog.search(q,period,main,type,tags(tags),undated));
+        model.addAttribute("undated",undated);model.addAttribute("q",q); model.addAttribute("period",period);model.addAttribute("main",main);model.addAttribute("type",type);model.addAttribute("tagQuery",tags);
         return "index";
     }
-    @GetMapping("/upload") String upload(Model model) { model.addAttribute("today",java.time.LocalDate.now().toString());return "upload"; }
-    @PostMapping("/upload") String upload(@RequestParam MultipartFile[] files,@RequestParam String date,@RequestParam String sender,
+    @GetMapping("/upload") String upload() { return "upload"; }
+    @PostMapping("/upload") String upload(@RequestParam MultipartFile[] files,@RequestParam(defaultValue="") String date,@RequestParam String sender,
         @RequestParam String main,@RequestParam String type,@RequestParam(defaultValue="") String tags,RedirectAttributes flash) {
         var metadata=new Catalog.Metadata(date,sender,main,type,tags(tags));
         int count=0; List<String> errors=new ArrayList<>(); List<DuplicateNotice> duplicates=new ArrayList<>();
@@ -56,7 +56,7 @@ public class Web {
         model.addAttribute("doc",doc);model.addAttribute("originalAvailable",available);model.addAttribute("previewKind",preview);
         return "edit";
     }
-    @PostMapping("/documents/{id}/edit") String edit(@PathVariable String id,@RequestParam String date,@RequestParam String sender,@RequestParam String main,
+    @PostMapping("/documents/{id}/edit") String edit(@PathVariable String id,@RequestParam(defaultValue="") String date,@RequestParam String sender,@RequestParam String main,
         @RequestParam String type,@RequestParam(required=false) String filename,@RequestParam(defaultValue="") String tags,@RequestParam(defaultValue="false") boolean confirmed,RedirectAttributes flash) throws Exception {
         String name=filename==null?catalog.get(id).filename():filename;
         catalog.update(id,new Catalog.Metadata(date,sender,main,type,tags(tags)),name,confirmed);
