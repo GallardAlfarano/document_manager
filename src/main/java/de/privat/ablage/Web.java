@@ -13,6 +13,7 @@ import java.util.*;
 
 @Controller
 public class Web {
+    public record DuplicateNotice(String uploadedName, Catalog.Doc existing) {}
     private final Catalog catalog;
     public Web(Catalog catalog) { this.catalog=catalog; }
     @ModelAttribute public void lists(Model model) {
@@ -30,9 +31,14 @@ public class Web {
     @PostMapping("/upload") String upload(@RequestParam MultipartFile[] files,@RequestParam String date,@RequestParam String sender,
         @RequestParam String main,@RequestParam String type,@RequestParam(defaultValue="") String tags,RedirectAttributes flash) {
         var metadata=new Catalog.Metadata(date,sender,main,type,tags(tags));
-        int count=0; List<String> errors=new ArrayList<>();
-        for(var file:files) { try {catalog.upload(file,metadata);count++;}catch(Exception e) {errors.add(file.getOriginalFilename()+": "+message(e));} }
-        flash.addFlashAttribute("notice",count+" Dokument(e) gespeichert."+(errors.isEmpty()?"":" Fehler: "+String.join(" / ",errors)));
+        int count=0; List<String> errors=new ArrayList<>(); List<DuplicateNotice> duplicates=new ArrayList<>();
+        for(var file:files) {
+            try {catalog.upload(file,metadata);count++;}
+            catch(Catalog.DuplicateDocumentException e) {duplicates.add(new DuplicateNotice(file.getOriginalFilename(),e.existing()));}
+            catch(Exception e) {errors.add(file.getOriginalFilename()+": "+message(e));}
+        }
+        if(count>0 || !errors.isEmpty()) flash.addFlashAttribute("notice",count+" Dokument(e) gespeichert."+(errors.isEmpty()?"":" Fehler: "+String.join(" / ",errors)));
+        if(!duplicates.isEmpty()) flash.addFlashAttribute("duplicates",duplicates);
         return "redirect:/";
     }
     @GetMapping("/documents/{id}/edit") String edit(@PathVariable String id,Model model) { model.addAttribute("doc",catalog.get(id));return "edit"; }

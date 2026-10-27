@@ -9,16 +9,27 @@ import org.springframework.web.multipart.MultipartFile;
 import java.nio.file.*;
 import java.io.*;
 import java.time.LocalDate;
+import java.security.MessageDigest;
+import java.security.DigestInputStream;
 import java.text.Normalizer;
 import java.util.*;
 
 @Service
 public class Catalog {
     public record Doc(String id, String date, String sender, String main, String type,
-                      String filename, String path, List<String> tags) {}
+                      String filename, String path, List<String> tags, String sha256) {}
     public record Metadata(String date, String sender, String main, String type, List<String> tags) {}
     public record Check(List<String> missing, List<String> uncatalogued) {}
     public record DeleteResult(String retainedBackup) {}
+    public static class DuplicateDocumentException extends IllegalArgumentException {
+        private final Doc existing;
+        public DuplicateDocumentException(Doc existing) {
+            super("Die Datei existiert bereits: "+existing.filename());
+            this.existing=existing;
+        }
+        public Doc existing() { return existing; }
+    }
+    private static final org.slf4j.Logger log=org.slf4j.LoggerFactory.getLogger(Catalog.class);
     private final JdbcTemplate db;
     private final TransactionTemplate tx;
     private final Path root;
@@ -29,11 +40,50 @@ public class Catalog {
         Files.createDirectories(root);
         db.execute("PRAGMA foreign_keys=ON");
         db.execute("CREATE TABLE IF NOT EXISTS labels(kind TEXT NOT NULL, name TEXT NOT NULL, key TEXT NOT NULL, PRIMARY KEY(kind,key))");
-        db.execute("CREATE TABLE IF NOT EXISTS documents(id TEXT PRIMARY KEY, date TEXT NOT NULL, sender TEXT NOT NULL, main TEXT NOT NULL, type TEXT NOT NULL, filename TEXT NOT NULL, path TEXT UNIQUE NOT NULL)");
+        db.execute("CREATE TABLE IF NOT EXISTS documents(id TEXT PRIMARY KEY, date TEXT NOT NULL, sender TEXT NOT NULL, main TEXT NOT NULL, type TEXT NOT NULL, filename TEXT NOT NULL, path TEXT UNIQUE NOT NULL, sha256 TEXT)");
         db.execute("CREATE TABLE IF NOT EXISTS document_tags(document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE, tag TEXT NOT NULL, PRIMARY KEY(document_id,tag))");
+        migrateHashes();
+        backfillHashes();
         for (String s: List.of("Finanzen","Wohnen","Versicherungen","Gesundheit")) label("main",s);
         for (String s: List.of("Rechnung","Info","Newsletter")) label("type",s);
         for (String s: List.of("Relevant für Steuererklärung","Todo")) label("extra",s);
+    }
+    private void migrateHashes() {
+        tx.executeWithoutResult(status->{
+            boolean present=db.queryForList("PRAGMA table_info(documents)").stream().anyMatch(c->"sha256".equals(c.get("name")));
+            if(!present) db.execute("ALTER TABLE documents ADD COLUMN sha256 TEXT");
+            // Nicht UNIQUE: Bereits früher angelegte Dubletten bleiben erhalten.
+            db.execute("CREATE INDEX IF NOT EXISTS documents_sha256 ON documents(sha256)");
+            // Neue Dubletten werden auch bei konkurrierenden INSERTs atomar verhindert.
+            db.execute("CREATE TRIGGER IF NOT EXISTS documents_reject_duplicate_hash BEFORE INSERT ON documents WHEN NEW.sha256 IS NOT NULL AND EXISTS(SELECT 1 FROM documents WHERE sha256=NEW.sha256) BEGIN SELECT RAISE(ABORT, 'duplicate_sha256'); END");
+            if(db.queryForObject("PRAGMA user_version",Integer.class)<1) db.execute("PRAGMA user_version=1");
+        });
+    }
+    private void backfillHashes() {
+        var rows=db.queryForList("SELECT id,path FROM documents WHERE sha256 IS NULL");
+        for(var row:rows) {
+            String hash;
+            try { hash=sha256(file((String)row.get("path"))); }
+            catch(IOException e) {
+                // Fehlende/gesperrte Originale dürfen den Start nicht verhindern.
+                log.warn("Hash für Dokument {} nicht berechnet; Original fehlt oder ist nicht lesbar: {}",row.get("id"),e.getMessage());
+                continue;
+            }
+            db.update("UPDATE documents SET sha256=? WHERE id=? AND sha256 IS NULL",hash,row.get("id"));
+        }
+    }
+    private static MessageDigest digest() {
+        try { return MessageDigest.getInstance("SHA-256"); }
+        catch(java.security.NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
+    }
+    static String sha256(Path file) throws IOException {
+        var digest=digest();
+        try(var in=new DigestInputStream(Files.newInputStream(file),digest)) { in.transferTo(OutputStream.nullOutputStream()); }
+        return HexFormat.of().formatHex(digest.digest());
+    }
+    private Optional<Doc> findHash(String hash) {
+        return db.queryForList("SELECT id FROM documents WHERE sha256=? ORDER BY date,id LIMIT 1",String.class,hash)
+            .stream().findFirst().map(this::get);
     }
     public String root() { return root.toString(); }
     private static String key(String value) { return Normalizer.normalize(value.trim(),Normalizer.Form.NFC).toLowerCase(Locale.ROOT); }
@@ -60,7 +110,7 @@ public class Catalog {
         return new Metadata(date,label("sender",m.sender()),label("main",m.main()),label("type",m.type()),extras.stream().map(s->label("extra",s)).distinct().toList());
     }
     public Doc get(String id) {
-        return db.query("SELECT * FROM documents WHERE id=?", (r,n)-> new Doc(r.getString("id"),r.getString("date"),r.getString("sender"),r.getString("main"),r.getString("type"),r.getString("filename"),r.getString("path"),db.queryForList("SELECT tag FROM document_tags WHERE document_id=? ORDER BY tag",String.class,id)),id)
+        return db.query("SELECT * FROM documents WHERE id=?", (r,n)-> new Doc(r.getString("id"),r.getString("date"),r.getString("sender"),r.getString("main"),r.getString("type"),r.getString("filename"),r.getString("path"),db.queryForList("SELECT tag FROM document_tags WHERE document_id=? ORDER BY tag",String.class,id),r.getString("sha256")),id)
             .stream().findFirst().orElseThrow(()->new IllegalArgumentException("Dokument nicht gefunden."));
     }
     public List<Doc> search(String query,String period,String main,String type,List<String> tags) {
@@ -93,28 +143,46 @@ public class Catalog {
     }
     public synchronized Doc upload(MultipartFile upload,Metadata raw) throws IOException {
         if(upload.isEmpty()) throw new IllegalArgumentException("Die Datei ist leer.");
-        String filename=component(upload.getOriginalFilename());
-        Metadata m=validate(raw);
-        String rel=relative(m,filename);
-        Path destination=file(rel);
-        // Niemals bestehende Dateien überschreiben. Bei gleichem Namen stabile ID ergänzen.
-        if(Files.exists(destination) || db.queryForObject("SELECT count(*) FROM documents WHERE path=?",Integer.class,rel)>0) {
-            int dot=filename.lastIndexOf('.');
-            String suffix=" ("+UUID.randomUUID().toString().substring(0,8)+")";
-            filename=dot>0?filename.substring(0,dot)+suffix+filename.substring(dot):filename+suffix;
-            rel=relative(m,filename); destination=file(rel);
-        }
-        String id=UUID.randomUUID().toString(), finalName=filename, finalRel=rel;
-        Files.createDirectories(destination.getParent());
         Path staged=Files.createTempFile(root,".upload-",".tmp");
         try {
-            try(var in=upload.getInputStream()) { Files.copy(in,staged,StandardCopyOption.REPLACE_EXISTING); }
+            var digest=digest();
+            try(var in=new DigestInputStream(upload.getInputStream(),digest)) {
+                Files.copy(in,staged,StandardCopyOption.REPLACE_EXISTING);
+            }
+            String hash=HexFormat.of().formatHex(digest.digest());
+            // Auch inzwischen wiederhergestellte Originale ohne bisherigen Hash berücksichtigen.
+            backfillHashes();
+            var existing=findHash(hash);
+            if(existing.isPresent()) throw new DuplicateDocumentException(existing.get());
+            // Dubletten ändern weder Metadaten noch Tag-Begriffe.
+            String filename=component(upload.getOriginalFilename());
+            Metadata m=validate(raw);
+            String rel=relative(m,filename);
+            Path destination=file(rel);
+            // Gleicher Dateiname mit anderem Inhalt: keine vorhandene Datei überschreiben.
+            if(Files.exists(destination) || db.queryForObject("SELECT count(*) FROM documents WHERE path=?",Integer.class,rel)>0) {
+                int dot=filename.lastIndexOf('.');
+                String suffix=" ("+UUID.randomUUID().toString().substring(0,8)+")";
+                filename=dot>0?filename.substring(0,dot)+suffix+filename.substring(dot):filename+suffix;
+                rel=relative(m,filename); destination=file(rel);
+            }
+            String id=UUID.randomUUID().toString(), finalName=filename, finalRel=rel;
+            Files.createDirectories(destination.getParent());
             Files.move(staged,destination);
             try {
-                tx.executeWithoutResult(status->{db.update("INSERT INTO documents VALUES(?,?,?,?,?,?,?)",id,m.date(),m.sender(),m.main(),m.type(),finalName,finalRel); tags(id,m.tags());});
-            } catch(RuntimeException e) { Files.delete(destination); throw e; }
+                tx.executeWithoutResult(status->{
+                    db.update("INSERT INTO documents(id,date,sender,main,type,filename,path,sha256) VALUES(?,?,?,?,?,?,?,?)",id,m.date(),m.sender(),m.main(),m.type(),finalName,finalRel,hash);
+                    tags(id,m.tags());
+                });
+            } catch(RuntimeException e) {
+                Files.delete(destination);
+                // Schutz durch den DB-Trigger: gleicher Hinweis bei einem konkurrierenden Upload.
+                var duplicate=findHash(hash);
+                if(duplicate.isPresent()) throw new DuplicateDocumentException(duplicate.get());
+                throw e;
+            }
+            return get(id);
         } finally { Files.deleteIfExists(staged); }
-        return get(id);
     }
     public synchronized Doc update(String id,Metadata raw,boolean confirmed) throws IOException {
         return update(id,raw,get(id).filename(),confirmed);

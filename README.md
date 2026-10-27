@@ -32,7 +32,7 @@ data/
         2026-06-10_Kontoauszug.pdf
 ```
 
-Alle Dateiinhalte werden unverändert kopiert. Bei Namenskollisionen ergänzt die Anwendung eine zufällige Kennung vor der Dateiendung. Originale werden niemals automatisch überschrieben. Datum, Haupttag und Absender sind Pflicht und bestimmen den Pfad. Der gespeicherte Dateiname hat das Schema `JJJJ-MM-TT_Dateiname.ext`. Dokumententyp ist ebenfalls Pflicht, verändert aber den Pfad nicht.
+Alle Dateiinhalte werden unverändert kopiert. Bei Namenskollisionen mit unterschiedlichem Inhalt ergänzt die Anwendung eine zufällige Kennung vor der Dateiendung. Inhaltlich identische Dateien werden anhand ihres SHA-256-Hashes erkannt und nicht erneut gespeichert. Originale werden niemals automatisch überschrieben. Datum, Haupttag und Absender sind Pflicht und bestimmen den Pfad. Der gespeicherte Dateiname hat das Schema `JJJJ-MM-TT_Dateiname.ext`. Dokumententyp ist ebenfalls Pflicht, verändert aber den Pfad nicht.
 
 Eigenen Speicherort wählen (empfohlen: absoluter Pfad):
 
@@ -45,6 +45,7 @@ Alternativ Umgebungsvariable `ABLAGE_DATA` setzen. Unter Windows beispielsweise 
 ## Bedienung
 
 - **Hinzufügen:** Eine oder mehrere Dateien per Drag-and-drop oder Dateiauswahl. Metadaten gelten für alle Dateien eines Uploads. Bei unterschiedlichen Metadaten getrennt hochladen. Teilweise erfolgreiche Mehrfachuploads werden mit Anzahl und Fehlern je Datei angezeigt; erfolgreiche Dateien nicht erneut hochladen.
+- **Dublettenprüfung:** Für jedes neu hochgeladene Dokument wird der SHA-256-Hash des vollständigen Dateiinhalts in `documents.sha256` gespeichert. Existiert dieser Hash bereits im Katalog, erscheint nur eine Meldung mit Link zum vorhandenen Dokument. Name, Datum, Absender und Tags spielen bei dieser Prüfung keine Rolle und werden am vorhandenen Dokument nicht verändert. Bei gemischten Mehrfach-Uploads werden neue Dateien gespeichert und Dubletten einzeln verlinkt. Die Prüfung erkennt identische Bytes, keine nur optisch gleichen PDFs/Bilder mit unterschiedlichen Metadaten oder Dateiinhalten. Nach dem Entfernen eines Katalogeintrags ist der Inhalt wieder hochladbar; unregistrierte Dateien werden nicht für diese Prüfung gescannt.
 - **Tags:** Genau ein Haupttag und Dokumententyp, beliebig viele optionale Tags. Eingabefelder schlagen vorhandene Werte vor; neue Werte können direkt eingegeben werden. Optionale Tags mit Semikolon trennen oder vorhandene Tags anklicken. Unter „Tags verwalten“ lassen sich Begriffe vorab anlegen und auflisten. Umbenennen/Zusammenführen/Löschen von Begriffen ist in dieser Version nicht enthalten; die Zuordnung pro Dokument lässt sich bearbeiten.
 - **Suche:** Freitext über Dateiname, Absender und Tags. Zeitraum `2025`, `2025-06` oder `2025-06-10`. Alle gesetzten Filter und optionalen Tags werden mit UND kombiniert. Beispiel: Zeitraum `2025`, Dokumententyp `Rechnung`, zusätzlicher Tag `Relevant für Steuererklärung`.
 - **Bearbeiten / Umbenennen:** Im Feld „Dateiname“ den gewünschten Namen mit Dateiendung, aber ohne Datumsprefix eingeben. Der Datumsprefix wird automatisch ergänzt, z. B. `2025-10-27_Rechnung.pdf`. Dateiname, Datum, Absender und Haupttag sind pfadwirksam. Pfadwirksame Änderungen werden vor dem Absenden bestätigt. Abbrechen lässt das Formular unverändert offen. Ohne JavaScript blockiert das Backend eine unbestätigte Pfadänderung. Bei einem belegten Zielpfad bleibt die vorhandene Datei erhalten und es erscheint ein Fehler.
@@ -69,14 +70,14 @@ Nur eine laufende Anwendungsinstanz pro Datenordner verwenden. Der Server bindet
 - `src/main/resources/static`: CSS und kleines JavaScript für Drag-and-drop/Bestätigung
 - `src/test/java`: Dateiintegrität, Kollisionen, Rückabwicklung, Suche, CSRF und HTTP-Abläufe
 
-Die Datenbanktabellen werden beim ersten Start angelegt. Für spätere Schemaänderungen sollte eine versionierte Migration ergänzt werden.
+Die Datenbanktabellen werden beim ersten Start angelegt. Die Hash-Migration ergänzt die Spalte `documents.sha256`, einen Suchindex und einen Trigger gegen neue Hash-Dubletten; sie ist wiederholbar und setzt SQLite `user_version` auf mindestens 1.
 
 ## Bestehende Ablagen aktualisieren
 
-Anwendung beenden, Datenordner sichern, Projekt aktualisieren und neu starten. Es ist keine Schemaänderung nötig. Bestehende Dateien mit Leerzeichen nach dem Datum bleiben unverändert nutzbar. Eine reine Änderung der Tags oder des Dokumententyps ändert ihren Pfad nicht. Bei einer Umbenennung oder Änderung von Datum, Haupttag oder Absender wird das neue Schema mit Unterstrich verwendet, nach ausdrücklicher Bestätigung.
+Anwendung beenden, Datenordner sichern, Projekt aktualisieren und neu starten. Die Datenbank wird automatisch um das Hash-Feld erweitert. Vorhandene, lesbare Originaldateien werden beim Start einmal vollständig gelesen; bei großen Ablagen kann dieser erste Start länger dauern. Bereits vorhandene Dubletten und ihre Einträge bleiben erhalten. Fehlende oder nicht lesbare Originaldateien bleiben zunächst ohne Hash und werden im Anwendungslog gemeldet; sie verhindern den Start nicht. Sobald solche Dateien wieder lesbar sind, wird ihr Hash beim nächsten Start oder vor dem nächsten Upload nachgetragen. Bereits gespeicherte Hashes bleiben auch bei fehlenden Originalen wirksam. Dateien nach dem Erfassen nicht extern inhaltlich verändern: der gespeicherte Hash wird nicht fortlaufend neu berechnet. Bestehende Dateien mit Leerzeichen nach dem Datum bleiben unverändert nutzbar. Eine reine Änderung der Tags oder des Dokumententyps ändert ihren Pfad nicht. Bei einer Umbenennung oder Änderung von Datum, Haupttag oder Absender wird das neue Schema mit Unterstrich verwendet, nach ausdrücklicher Bestätigung.
 
 ## Validierungsstand dieser Übergabe
 
-Java-21-Syntax aller fünf Java-Dateien, JavaScript-Syntax und einfache HTML-Strukturprüfungen wurden lokal geprüft. Die erweiterten Tests decken unter anderem Umbenennen, alte Dateipfade, Namenskollisionen, beide Löschvarianten, fehlende Originale, explizite Bestätigung, CSRF und Rückabwicklung von Datenbankfehlern ab.
+Java-21-Syntax aller fünf Java-Dateien, JavaScript-Syntax und einfache HTML-Strukturprüfungen wurden lokal geprüft. Die erweiterten Tests decken unter anderem Umbenennen, alte Dateipfade, Namenskollisionen, beide Löschvarianten, fehlende Originale, explizite Bestätigung, CSRF und Rückabwicklung von Datenbankfehlern, SHA-256-Speicherung, Migration bestehender Ablagen und Dublettenmeldungen mit Links ab.
 
 Ein vollständiger Maven-Build ist in der bereitgestellten Entwicklungsumgebung weiterhin nicht möglich, weil Maven fehlt und der konfigurierte Netzwerk-Proxy nicht erreichbar ist. Der Workflow `.github/workflows/verify.yml` führt `mvn clean verify` mit Java 21 unter Linux und Windows aus. Den tatsächlichen Laufstatus findest du im GitHub-Reiter **Actions**. Lokal kannst du die Tests über das Maven-Fenster in IntelliJ ausführen.

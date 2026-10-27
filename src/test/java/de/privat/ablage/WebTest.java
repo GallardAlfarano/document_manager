@@ -42,7 +42,7 @@ class WebTest {
         assertThat(catalog.get(doc.id()).date()).isEqualTo("2025-06-10");
     }
     Catalog.Doc document(String name) throws Exception {
-        return catalog.upload(new MockMultipartFile("files",name,"application/pdf",new byte[]{1,2,3}),
+        return catalog.upload(new MockMultipartFile("files",name,"application/pdf",name.getBytes(java.nio.charset.StandardCharsets.UTF_8)),
             new Catalog.Metadata("2025-10-27","ADAC","Finanzen","Rechnung",java.util.List.of()));
     }
     @Test void renameThroughBrowserForm() throws Exception {
@@ -71,5 +71,45 @@ class WebTest {
             assertThatThrownBy(()->catalog.get(doc.id())).isInstanceOf(IllegalArgumentException.class);
             assertThat(java.nio.file.Files.exists(catalog.file(doc.path()))).isEqualTo(action.equals("keep"));
         }
+    }
+    @Test void duplicateUploadShowsMessageWithLinkInsteadOfCreatingCopy() throws Exception {
+        var existing=document("Bereits vorhanden.pdf");
+        byte[] bytes=filesForTest(existing);
+        var response=mvc.perform(multipart("/upload").file(new MockMultipartFile("files","Anderer Name.pdf","application/pdf",bytes))
+            .param("date","2026-10-27").param("sender","Anderer Absender").param("main","Wohnen").param("type","Info").with(csrf()))
+            .andExpect(status().is3xxRedirection()).andExpect(flash().attributeExists("duplicates"))
+            .andExpect(flash().attributeCount(1)).andReturn();
+        mvc.perform(get("/").flashAttrs(response.getFlashMap())).andExpect(status().isOk())
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("Die Datei existiert bereits.")))
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("href=\"/documents/"+existing.id()+"/edit\"")));
+        assertThat(catalog.search("Anderer Name.pdf","","","",java.util.List.of())).isEmpty();
+        assertThat(catalog.get(existing.id()).sender()).isEqualTo("ADAC");
+    }
+    byte[] filesForTest(Catalog.Doc doc) throws Exception { return java.nio.file.Files.readAllBytes(catalog.file(doc.path())); }
+    @Test void mixedBatchStoresNewFilesAndReportsAllDuplicates() throws Exception {
+        var existing=document("Mischung vorhanden.pdf");
+        byte[] same=filesForTest(existing);
+        var response=mvc.perform(multipart("/upload")
+            .file(new MockMultipartFile("files","Duplikat 1.pdf","application/pdf",same))
+            .file(new MockMultipartFile("files","Neu.pdf","application/pdf",new byte[]{21,22,23,24}))
+            .file(new MockMultipartFile("files","Duplikat 2.pdf","application/pdf",same))
+            .param("date","2026-10-27").param("sender","Batch").param("main","Finanzen").param("type","Info").with(csrf()))
+            .andExpect(status().is3xxRedirection()).andExpect(flash().attribute("notice","1 Dokument(e) gespeichert."))
+            .andReturn();
+        assertThat((java.util.List<?>)response.getFlashMap().get("duplicates")).hasSize(2);
+        assertThat(catalog.search("Neu.pdf","2026-10-27","","",java.util.List.of())).hasSize(1);
+        mvc.perform(get("/").flashAttrs(response.getFlashMap())).andExpect(status().isOk());
+    }
+    @Test void duplicatesWithinSameBatchAreReportedWithWorkingLink() throws Exception {
+        var response=mvc.perform(multipart("/upload")
+            .file(new MockMultipartFile("files","Erste Kopie.pdf","application/pdf",new byte[]{41,42,43}))
+            .file(new MockMultipartFile("files","Zweite Kopie.pdf","application/pdf",new byte[]{41,42,43}))
+            .param("date","2026-10-27").param("sender","Gleicher Batch").param("main","Finanzen").param("type","Info").with(csrf()))
+            .andExpect(status().is3xxRedirection()).andExpect(flash().attribute("notice","1 Dokument(e) gespeichert."))
+            .andReturn();
+        var notices=(java.util.List<?>)response.getFlashMap().get("duplicates");
+        assertThat(notices).hasSize(1);
+        var existing=((Web.DuplicateNotice)notices.getFirst()).existing();
+        mvc.perform(get("/documents/"+existing.id()+"/edit")).andExpect(status().isOk());
     }
 }

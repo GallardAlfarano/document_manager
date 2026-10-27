@@ -22,6 +22,7 @@ class CatalogTest {
     }
     Catalog.Metadata metadata() { return new Catalog.Metadata("2025-06-10","Sparkasse","Finanzen","Rechnung",List.of("Relevant für Steuererklärung")); }
     MockMultipartFile upload() { return new MockMultipartFile("files","Kontoauszug.pdf","application/pdf",new byte[]{1,2,3,4}); }
+    MockMultipartFile differentUpload() { return new MockMultipartFile("files","Kontoauszug.pdf","application/pdf",new byte[]{9,8,7}); }
     @Test void originalsUseReadablePathsAndKeepBytes() throws Exception {
         var d=catalog.upload(upload(),metadata());
         assertThat(d.path().replace('\\','/')).isEqualTo("Finanzen/Sparkasse/2025-06-10_Kontoauszug.pdf");
@@ -45,7 +46,7 @@ class CatalogTest {
         assertThatThrownBy(()->catalog.search("","2025-99","","",List.of())).isInstanceOf(java.time.DateTimeException.class);
     }
     @Test void collisionsNeverOverwriteOriginals() throws Exception {
-        var first=catalog.upload(upload(),metadata());var second=catalog.upload(upload(),metadata());
+        var first=catalog.upload(upload(),metadata());var second=catalog.upload(differentUpload(),metadata());
         assertThat(second.path()).isNotEqualTo(first.path());
         assertThat(catalog.check().missing()).isEmpty();assertThat(catalog.check().uncatalogued()).isEmpty();
     }
@@ -167,7 +168,7 @@ class CatalogTest {
         assertThat(catalog.labels("extra")).contains("Relevant für Steuererklärung");
     }
     @Test void deletingWithOriginalRemovesOnlySelectedDocument() throws Exception {
-        var old=catalog.upload(upload(),metadata());var other=catalog.upload(upload(),metadata());
+        var old=catalog.upload(upload(),metadata());var other=catalog.upload(differentUpload(),metadata());
         assertThat(catalog.delete(old.id(),true,true).retainedBackup()).isNull();
         assertThatThrownBy(()->catalog.get(old.id())).isInstanceOf(IllegalArgumentException.class);
         assertThat(catalog.file(old.path())).doesNotExist();assertThat(catalog.file(other.path())).exists();
@@ -197,16 +198,98 @@ class CatalogTest {
     }
     @Test void failedDeleteCommitRestoresOriginalFromBackup() throws Exception {
         var old=catalog.upload(upload(),metadata());
+        var failCommit=new java.util.concurrent.atomic.AtomicBoolean(false);
         var manager=new DataSourceTransactionManager(db.getDataSource()) {
             @Override protected void doCommit(org.springframework.transaction.support.DefaultTransactionStatus status) {
+                if(!failCommit.get()) { super.doCommit(status); return; }
                 throw new org.springframework.transaction.TransactionSystemException("Simulierter Commitfehler");
             }
         };
         manager.setRollbackOnCommitFailure(true);
         var failing=new Catalog(db,manager,temp.toString());
+        failCommit.set(true);
         assertThatThrownBy(()->failing.delete(old.id(),true,true)).isInstanceOf(RuntimeException.class);
         assertThat(catalog.get(old.id()).tags()).containsExactly("Relevant für Steuererklärung");
         assertThat(Files.readAllBytes(catalog.file(old.path()))).containsExactly(new byte[]{1,2,3,4});
         assertThat(catalog.check().uncatalogued()).isEmpty();
+    }
+    @Test void storesStandardSha256OfExactBytesAndPreservesItOnRename() throws Exception {
+        var doc=catalog.upload(new MockMultipartFile("files","abc.pdf","application/pdf",new byte[]{97,98,99}),metadata());
+        assertThat(doc.sha256()).isEqualTo("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assertThat(db.queryForObject("SELECT sha256 FROM documents WHERE id=?",String.class,doc.id())).isEqualTo(doc.sha256());
+        assertThat(catalog.update(doc.id(),metadata(),"Umbenannt.pdf",true).sha256()).isEqualTo(doc.sha256());
+    }
+    @Test void duplicateContentReturnsExistingDocumentRegardlessOfNameOrMetadata() throws Exception {
+        var doc=catalog.upload(upload(),metadata());
+        var other=new Catalog.Metadata("2026-10-27","Neuer Absender","Neue Kategorie","Neuer Typ",List.of("Neuer Tag"));
+        var copy=new MockMultipartFile("files","Ganz anders.zip","application/zip",new byte[]{1,2,3,4});
+        assertThatThrownBy(()->catalog.upload(copy,other)).isInstanceOfSatisfying(Catalog.DuplicateDocumentException.class,
+            e->assertThat(e.existing().id()).isEqualTo(doc.id()));
+        assertThat(catalog.get(doc.id()).sender()).isEqualTo("Sparkasse");
+        assertThat(catalog.labels("main")).doesNotContain("Neue Kategorie");
+        assertThat(db.queryForObject("SELECT count(*) FROM documents",Integer.class)).isEqualTo(1);
+        assertThat(catalog.check().uncatalogued()).isEmpty();
+        try(var paths=Files.walk(Path.of(catalog.root()))) { assertThat(paths.filter(Files::isRegularFile).count()).isEqualTo(1); }
+    }
+    @Test void sameFilenameWithDifferentBytesIsStillAllowed() throws Exception {
+        var first=catalog.upload(upload(),metadata());var second=catalog.upload(differentUpload(),metadata());
+        assertThat(first.sha256()).isNotEqualTo(second.sha256());assertThat(first.path()).isNotEqualTo(second.path());
+    }
+    @Test void knownHashStillDetectsDuplicateWhenOriginalIsMissing() throws Exception {
+        var doc=catalog.upload(upload(),metadata());Files.delete(catalog.file(doc.path()));
+        assertThatThrownBy(()->catalog.upload(upload(),metadata())).isInstanceOfSatisfying(Catalog.DuplicateDocumentException.class,
+            e->assertThat(e.existing().id()).isEqualTo(doc.id()));
+        assertThat(catalog.check().missing()).containsExactly(doc.path());
+    }
+    @Test void removingCatalogEntryAllowsUploadingSameContentAgain() throws Exception {
+        var doc=catalog.upload(upload(),metadata());catalog.delete(doc.id(),false,true);
+        var added=catalog.upload(upload(),metadata());
+        assertThat(added.id()).isNotEqualTo(doc.id());assertThat(added.sha256()).isEqualTo(doc.sha256());
+        assertThat(catalog.file(doc.path())).exists();assertThat(catalog.file(added.path())).exists();
+    }
+    @Test void databaseAlsoRejectsNewDuplicateHash() throws Exception {
+        var doc=catalog.upload(upload(),metadata());
+        assertThatThrownBy(()->db.update("INSERT INTO documents(id,date,sender,main,type,filename,path,sha256) VALUES(?,?,?,?,?,?,?,?)",
+            "other",doc.date(),doc.sender(),doc.main(),doc.type(),"copy.pdf","another.pdf",doc.sha256())).isInstanceOf(RuntimeException.class);
+        assertThat(db.queryForObject("SELECT count(*) FROM documents",Integer.class)).isEqualTo(1);
+    }
+    @Test void simultaneousUploadsCreateOnlyOneDocument() throws Exception {
+        try(var executor=java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            java.util.concurrent.Callable<String> action=()->{
+                try { return catalog.upload(upload(),metadata()).id(); }
+                catch(Catalog.DuplicateDocumentException e) { return e.existing().id(); }
+            };
+            var first=executor.submit(action);var second=executor.submit(action);
+            assertThat(first.get()).isEqualTo(second.get());
+        }
+        assertThat(db.queryForObject("SELECT count(*) FROM documents",Integer.class)).isEqualTo(1);
+        assertThat(catalog.check().uncatalogued()).isEmpty();
+    }
+    @Test void legacyMigrationHashesOriginalsAndKeepsExistingDuplicates() throws Exception {
+        Path data=temp.resolve("legacy");Files.createDirectories(data.resolve("originale"));
+        Files.write(data.resolve("originale/first.pdf"),new byte[]{1,2,3,4});
+        Files.write(data.resolve("originale/second.pdf"),new byte[]{1,2,3,4});
+        var ds=new SQLiteDataSource();ds.setUrl("jdbc:sqlite:"+data.resolve("catalog.sqlite"));
+        var legacy=new JdbcTemplate(ds);
+        legacy.execute("CREATE TABLE documents(id TEXT PRIMARY KEY, date TEXT NOT NULL, sender TEXT NOT NULL, main TEXT NOT NULL, type TEXT NOT NULL, filename TEXT NOT NULL, path TEXT UNIQUE NOT NULL)");
+        for(String name:List.of("first","second","missing")) legacy.update("INSERT INTO documents VALUES(?,?,?,?,?,?,?)",name,"2025-06-10","Sparkasse","Finanzen","Rechnung",name+".pdf",name+".pdf");
+        var migrated=new Catalog(legacy,new DataSourceTransactionManager(ds),data.toString());
+        assertThat(migrated.get("first").sha256()).isEqualTo(migrated.get("second").sha256()).hasSize(64);
+        assertThat(migrated.get("missing").sha256()).isNull();
+        assertThat(legacy.queryForObject("SELECT count(*) FROM documents",Integer.class)).isEqualTo(3);
+        assertThat(legacy.queryForObject("PRAGMA user_version",Integer.class)).isEqualTo(1);
+        assertThatThrownBy(()->migrated.upload(upload(),metadata())).isInstanceOf(Catalog.DuplicateDocumentException.class);
+        // Erneuter Start ist idempotent und löscht keine bestehenden Dubletten.
+        new Catalog(legacy,new DataSourceTransactionManager(ds),data.toString());
+        assertThat(legacy.queryForObject("SELECT count(*) FROM documents",Integer.class)).isEqualTo(3);
+    }
+    @Test void restoredUnhashedOriginalIsIncludedInNextUploadCheck() throws Exception {
+        var doc=catalog.upload(upload(),metadata());
+        db.update("UPDATE documents SET sha256=NULL WHERE id=?",doc.id());
+        Files.delete(catalog.file(doc.path()));setup();
+        assertThat(catalog.get(doc.id()).sha256()).isNull();
+        Files.write(catalog.file(doc.path()),new byte[]{1,2,3,4});
+        assertThatThrownBy(()->catalog.upload(upload(),metadata())).isInstanceOf(Catalog.DuplicateDocumentException.class);
+        assertThat(catalog.get(doc.id()).sha256()).isEqualTo(doc.sha256());
     }
 }
