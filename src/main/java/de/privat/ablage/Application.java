@@ -15,7 +15,8 @@ public class Application {
     @Bean SecurityFilterChain security(HttpSecurity http) throws Exception {
         // Lokales Einzelbenutzerprogramm. CSRF-Schutz bleibt aktiv.
         return http.authorizeHttpRequests(a -> a.anyRequest().permitAll())
-            .formLogin(f -> f.disable()).httpBasic(b -> b.disable()).build();
+            .formLogin(f -> f.disable()).httpBasic(b -> b.disable())
+            .headers(h -> h.frameOptions(f -> f.sameOrigin())).build();
     }
     @Bean javax.sql.DataSource dataSource(org.springframework.core.env.Environment env) throws Exception {
         Path data = Path.of(env.getProperty("app.data", "./data")).toAbsolutePath();

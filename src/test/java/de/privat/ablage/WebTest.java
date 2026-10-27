@@ -112,4 +112,78 @@ class WebTest {
         var existing=((Web.DuplicateNotice)notices.getFirst()).existing();
         mvc.perform(get("/documents/"+existing.id()+"/edit")).andExpect(status().isOk());
     }
+    Catalog.Doc previewDocument(String name,byte[] bytes) throws Exception {
+        return catalog.upload(new MockMultipartFile("files",name,"application/octet-stream",bytes),
+            new Catalog.Metadata("2025-10-27","Vorschautest","Finanzen","Info",java.util.List.of()));
+    }
+    @Test void documentPageIncludesDownloadAndFallbackForUnsupportedFormat() throws Exception {
+        var doc=previewDocument("Archiv.zip",new byte[]{80,75,3,4,1,2,3});
+        mvc.perform(get("/documents/"+doc.id()+"/edit")).andExpect(status().isOk())
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("href=\"/documents/"+doc.id()+"/file\"")))
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("keine direkte Vorschau")))
+            .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("<iframe"))));
+        mvc.perform(get("/documents/"+doc.id()+"/preview")).andExpect(status().isUnsupportedMediaType());
+        mvc.perform(get("/documents/"+doc.id()+"/file")).andExpect(status().isOk())
+            .andExpect(header().string("Content-Disposition",org.hamcrest.Matchers.startsWith("attachment;")))
+            .andExpect(content().bytes(filesForTest(doc)));
+    }
+    @Test void imagePreviewUsesContentSignatureAndAllowsSameOriginEmbedding() throws Exception {
+        byte[] png=java.util.Base64.getDecoder().decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=");
+        // Selbst nach einer Umbenennung bleibt die Vorschau anhand des Inhalts korrekt.
+        var doc=previewDocument("Bild ohne Bildendung.dat",png);
+        mvc.perform(get("/documents/"+doc.id()+"/preview")).andExpect(status().isOk())
+            .andExpect(content().contentType("image/png")).andExpect(content().bytes(png))
+            .andExpect(header().string("Content-Disposition",org.hamcrest.Matchers.startsWith("inline;")))
+            .andExpect(header().string("X-Frame-Options","SAMEORIGIN"))
+            .andExpect(header().string("X-Content-Type-Options","nosniff"));
+        mvc.perform(get("/documents/"+doc.id()+"/edit")).andExpect(status().isOk())
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("<img")))
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("src=\"/documents/"+doc.id()+"/preview\"")))
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("In neuem Tab öffnen")));
+    }
+    byte[] samplePdf() {
+        var pdf=new StringBuilder("%PDF-1.4\n");
+        var objects=java.util.List.of("<< /Type /Catalog /Pages 2 0 R >>","<< /Type /Pages /Kids [3 0 R] /Count 1 >>","<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>");
+        var offsets=new java.util.ArrayList<Integer>();
+        for(int i=0;i<objects.size();i++) { offsets.add(pdf.length());pdf.append(i+1).append(" 0 obj\n").append(objects.get(i)).append("\nendobj\n"); }
+        int start=pdf.length();pdf.append("xref\n0 4\n0000000000 65535 f \n");
+        for(int offset:offsets) pdf.append(String.format(java.util.Locale.ROOT,"%010d 00000 n \n",offset));
+        pdf.append("trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n").append(start).append("\n%%EOF\n");
+        return pdf.toString().getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+    }
+    @Test void pdfPreviewSupportsBrowserViewerAndByteRanges() throws Exception {
+        byte[] pdf=samplePdf();var doc=previewDocument("Vorschau.pdf",pdf);
+        mvc.perform(get("/documents/"+doc.id()+"/edit")).andExpect(status().isOk())
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("<iframe")))
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("title=\"PDF-Vorschau\"")))
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("href=\"/documents/"+doc.id()+"/file\"")));
+        mvc.perform(get("/documents/"+doc.id()+"/preview")).andExpect(status().isOk())
+            .andExpect(content().contentType("application/pdf")).andExpect(content().bytes(pdf))
+            .andExpect(header().string("X-Frame-Options","SAMEORIGIN"))
+            .andExpect(header().string("Content-Disposition",org.hamcrest.Matchers.startsWith("inline;")));
+        mvc.perform(get("/documents/"+doc.id()+"/preview").header("Range","bytes=0-4"))
+            .andExpect(status().isPartialContent()).andExpect(header().string("Content-Range","bytes 0-4/"+pdf.length))
+            .andExpect(content().bytes(new byte[]{37,80,68,70,45}));
+    }
+    @Test void activeContentCannotBeDisplayedInlineEvenWithPdfOrImageExtension() throws Exception {
+        for(String name:new String[]{"Falsches PDF.pdf","Falsches Bild.png","Aktives Bild.svg"}) {
+            byte[] bytes=("<svg xmlns='http://www.w3.org/2000/svg'><script>alert('"+name+"')</script></svg>").getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            var doc=previewDocument(name,bytes);
+            mvc.perform(get("/documents/"+doc.id()+"/preview")).andExpect(status().isUnsupportedMediaType());
+            mvc.perform(get("/documents/"+doc.id()+"/file")).andExpect(status().isOk())
+                .andExpect(content().contentType("application/octet-stream"))
+                .andExpect(header().string("Content-Disposition",org.hamcrest.Matchers.startsWith("attachment;")));
+            mvc.perform(get("/documents/"+doc.id()+"/edit")).andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("<iframe"))))
+                .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("<img"))));
+        }
+    }
+    @Test void missingOriginalShowsNoticeWithoutBreakingMetadataEditing() throws Exception {
+        var doc=document("Fehlendes Original.pdf");java.nio.file.Files.delete(catalog.file(doc.path()));
+        mvc.perform(get("/documents/"+doc.id()+"/edit")).andExpect(status().isOk())
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("Originaldatei fehlt oder ist nicht lesbar")))
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("name=\"filename\"")))
+            .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("<iframe"))));
+        mvc.perform(get("/documents/"+doc.id()+"/preview")).andExpect(status().isNotFound());
+    }
 }
