@@ -21,7 +21,7 @@
     </div>
     <form method="get" action="/" class="panel">
         <div class="grid"><label>Suche<input name="q" th:value="${q}"
-                                             placeholder="Dateiname, Absender oder Tag"></label><label>Jahr, Monat oder
+                                             placeholder="Dateiname, Absender, Tag oder Erfassungszeitpunkt"></label><label>Jahr, Monat oder
             Datum<input id="period" name="period" th:value="${period}" th:disabled="${undated}"
                         placeholder="2025 oder 2025-06"></label><label>Haupttag<select name="main">
             <option value="">Alle Haupttags</option>
@@ -29,7 +29,9 @@
         </select></label><label>Dokumententyp<select name="type">
             <option value="">Alle Typen</option>
             <option th:each="v:${types}" th:value="${v}" th:text="${v}" th:selected="${v==type}"></option>
-        </select></label></div>
+        </select></label>
+            <label>Erfasst am (Jahr, Monat oder Tag)<input name="createdPeriod" th:value="${createdPeriod}" placeholder="2026 oder 2026-10 oder 2026-10-28"></label>
+        </div>
         <label class="choice"><input id="undated" type="checkbox" name="undated" value="true"
                                      th:checked="${undated}"><span>Nur Einträge ohne Datum</span></label><label>Zusätzliche
         Tags (alle müssen zutreffen)<input id="tagInput" name="tags" list="extras" th:value="${tagQuery}"
@@ -39,7 +41,8 @@
             <button>Suchen</button>
             <a href="/">Filter zurücksetzen</a></div>
     </form>
-    <p class="count" th:text="${#lists.size(docs)} + ' Dokument(e)'"></p>
+    <p class="count" th:text="|${result.total} Dokument(e) · Seite ${result.page} von ${result.pageCount} · maximal 30 pro Seite|"></p>
+    <p class="hint">Neueste Erfassungen zuerst. Erfassungszeiten in Europe/Berlin. Bei älteren Einträgen ist der ursprüngliche Erfassungszeitpunkt unbekannt.</p>
     <div class="panel" th:if="${#lists.isEmpty(docs)}"><h2>Keine Dokumente gefunden</h2>
         <p>Füge deine ersten Dateien hinzu oder passe die Filter an.</p></div>
     <div class="table-wrap" th:unless="${#lists.isEmpty(docs)}">
@@ -47,7 +50,8 @@
             <thead>
             <tr>
                 <th>Dokument / Absender</th>
-                <th>Datum</th>
+                <th>Dokumentdatum</th>
+                <th>Erfasst am</th>
                 <th>Einordnung</th>
                 <th>Zusätzliche Tags</th>
                 <th>Aktionen</th>
@@ -57,6 +61,7 @@
             <tr th:each="d:${docs}">
                 <td><strong th:text="${d.filename}"></strong><small th:text="${d.sender}"></small></td>
                 <td th:text="${#strings.isEmpty(d.date) ? 'Ohne Datum' : d.date}"></td>
+                <td th:text="${d.createdAtLabel()}"></td>
                 <td><span class="badge" th:text="${d.main}"></span><small th:text="${d.type}"></small></td>
                 <td><span class="badge" th:each="t:${d.tags}" th:text="${t}"></span></td>
                 <td><a th:href="@{/documents/{id}/file(id=${d.id})}">Original</a> · <a
@@ -67,6 +72,11 @@
             </tbody>
         </table>
     </div>
+    <nav class="pagination" aria-label="Dokumentseiten" th:if="${result.pageCount > 1}">
+        <a th:if="${result.page > 1}" th:href="@{/(q=${q},period=${period},main=${main},type=${type},tags=${tagQuery},undated=${undated},createdPeriod=${createdPeriod},page=${result.page - 1})}">← Neuere Einträge</a>
+        <span th:text="|Seite ${result.page} von ${result.pageCount}|"></span>
+        <a th:if="${result.page < result.pageCount}" th:href="@{/(q=${q},period=${period},main=${main},type=${type},tags=${tagQuery},undated=${undated},createdPeriod=${createdPeriod},page=${result.page + 1})}">Ältere Einträge →</a>
+    </nav>
     <div th:replace="~{fragments :: suggestions}"></div>
 </main>
 </body>

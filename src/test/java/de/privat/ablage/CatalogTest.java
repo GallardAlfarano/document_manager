@@ -276,8 +276,10 @@ class CatalogTest {
         var migrated=new Catalog(legacy,new DataSourceTransactionManager(ds),data.toString());
         assertThat(migrated.get("first").sha256()).isEqualTo(migrated.get("second").sha256()).hasSize(64);
         assertThat(migrated.get("missing").sha256()).isNull();
+        assertThat(migrated.get("first").createdAt()).isNull();
+        assertThat(migrated.get("first").createdAtLabel()).isEqualTo("Unbekannt (Bestand)");
         assertThat(legacy.queryForObject("SELECT count(*) FROM documents",Integer.class)).isEqualTo(3);
-        assertThat(legacy.queryForObject("PRAGMA user_version",Integer.class)).isEqualTo(1);
+        assertThat(legacy.queryForObject("PRAGMA user_version",Integer.class)).isEqualTo(2);
         assertThatThrownBy(()->migrated.upload(upload(),metadata())).isInstanceOf(Catalog.DuplicateDocumentException.class);
         // Erneuter Start ist idempotent und löscht keine bestehenden Dubletten.
         new Catalog(legacy,new DataSourceTransactionManager(ds),data.toString());
@@ -357,5 +359,60 @@ class CatalogTest {
         var old=catalog.upload(upload(),raw);
         assertThatThrownBy(()->catalog.upload(upload(),metadata())).isInstanceOfSatisfying(Catalog.DuplicateDocumentException.class,
             e->assertThat(e.existing().id()).isEqualTo(old.id()));
+    }
+    Catalog.Doc capturedFixture(String name, String captured, String documentDate) {
+        String id=java.util.UUID.randomUUID().toString();
+        db.update("INSERT INTO documents(id,date,sender,main,type,filename,path,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            id,documentDate,"Archiv","Finanzen","Info",name,"fixtures/"+id+"/"+name,captured);
+        return catalog.get(id);
+    }
+    @Test void captureTimeIsAutomaticAndImmutableAcrossEditDuplicateAndRestart() throws Exception {
+        var before=java.time.Instant.now().minusSeconds(1);
+        var doc=catalog.upload(upload(),metadata());
+        assertThat(doc.createdAt()).isNotNull().isAfterOrEqualTo(before).isBeforeOrEqualTo(java.time.Instant.now());
+        assertThat(catalog.update(doc.id(),metadata(),"Neuer Name.pdf",true).createdAt()).isEqualTo(doc.createdAt());
+        assertThatThrownBy(()->catalog.upload(upload(),metadata())).isInstanceOf(Catalog.DuplicateDocumentException.class);
+        setup();assertThat(catalog.get(doc.id()).createdAt()).isEqualTo(doc.createdAt());
+        assertThatThrownBy(()->db.update("UPDATE documents SET created_at=? WHERE id=?","2000-01-01T00:00:00.000Z",doc.id())).isInstanceOf(RuntimeException.class);
+        assertThat(catalog.get(doc.id()).createdAt()).isEqualTo(doc.createdAt());
+    }
+    @Test void newestThirtyAreBasedOnCaptureTimeRatherThanDocumentDate() {
+        var docs=new java.util.ArrayList<Catalog.Doc>();
+        for(int i=0;i<35;i++) docs.add(capturedFixture("Archiv "+i+".pdf",
+            java.time.Instant.parse("2026-10-01T12:00:00Z").plusSeconds(i).toString(),i==0?"2099-01-01":""));
+        var first=catalog.page("","","","",List.of(),false,"",1);
+        assertThat(first.docs()).hasSize(30);assertThat(first.total()).isEqualTo(35);assertThat(first.pageCount()).isEqualTo(2);
+        assertThat(first.docs().getFirst().id()).isEqualTo(docs.getLast().id());
+        assertThat(first.docs().getLast().id()).isEqualTo(docs.get(5).id());
+        var second=catalog.page("","","","",List.of(),false,"",2);
+        assertThat(second.docs()).hasSize(5);assertThat(second.docs().getLast().id()).isEqualTo(docs.getFirst().id());
+        assertThat(catalog.page("","","","",List.of(),false,"",Integer.MAX_VALUE).page()).isEqualTo(2);
+        assertThat(catalog.page("","","","",List.of(),false,"",-1).page()).isEqualTo(1);
+    }
+    @Test void equalCaptureTimesUseInsertionOrderAndUnknownLegacyTimesSortLast() {
+        var old=capturedFixture("Bestand.pdf",null,"2099-01-01");
+        var first=capturedFixture("Eins.pdf","2026-10-01T12:00:00.000Z","");
+        var last=capturedFixture("Zwei.pdf","2026-10-01T12:00:00.000Z","");
+        assertThat(catalog.search("","","","",List.of())).containsExactly(last,first,old);
+        assertThat(catalog.search("Unbekannt (Bestand)","","","",List.of())).containsExactly(old);
+    }
+    @Test void capturePeriodUsesBerlinCalendarBoundariesIncludingDaylightSaving() {
+        var previous=capturedFixture("Grenze vorher.pdf","2026-03-28T22:59:59.999Z","");
+        var start=capturedFixture("Grenze Anfang.pdf","2026-03-28T23:00:00.000Z","");
+        var end=capturedFixture("Grenze Ende.pdf","2026-03-29T21:59:59.999Z","");
+        var next=capturedFixture("Grenze danach.pdf","2026-03-29T22:00:00.000Z","");
+        assertThat(catalog.search("","","","",List.of(),false,"2026-03-29")).containsExactly(end,start);
+        assertThat(catalog.search("","","","",List.of(),false,"2026-03")).hasSize(4);
+        assertThat(catalog.search("","","","",List.of(),false,"2026")).hasSize(4);
+        assertThat(start.createdAtLabel()).startsWith("29.03.2026 00:00:00");
+    }
+    @Test void captureFilterCombinesWithDocumentFiltersAndPagination() {
+        var wanted=capturedFixture("Zeitfilter.pdf","2026-10-28T11:00:00.000Z","2025-06-10");
+        capturedFixture("Andere Zeit.pdf","2026-09-28T11:00:00.000Z","2025-06-10");
+        assertThat(catalog.page("Zeitfilter","2025","Finanzen","Info",List.of(),false,"2026-10",1).docs()).containsExactly(wanted);
+        assertThat(catalog.page("Zeitfilter","","","",List.of(),true,"2026-10",1).docs()).isEmpty();
+        assertThat(catalog.search("28.10.2026","","","",List.of())).containsExactly(wanted);
+        assertThatThrownBy(()->catalog.search("","","","",List.of(),false,"2026-13")).isInstanceOf(java.time.DateTimeException.class);
+        assertThat(catalog.page("nicht vorhanden","","","",List.of(),false,"",5).page()).isEqualTo(1);
     }
 }

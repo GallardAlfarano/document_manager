@@ -5,6 +5,7 @@
 <header th:replace="~{fragments :: nav}"></header>
 <main class="narrow"><h1>Dokument bearbeiten</h1>
     <p th:text="${doc.filename}"></p>
+    <p class="hint">Erfasst am: <span th:text="${doc.createdAtLabel()}"></span></p>
     <section class="panel document-preview" aria-label="Originaldokument">
         <h2>Originaldokument</h2>
         <th:block th:if="${originalAvailable}">

@@ -9,7 +9,9 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.nio.file.*;
 import java.io.*;
-import java.time.LocalDate;
+import java.time.*;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
 import java.security.MessageDigest;
 import java.security.DigestInputStream;
 import java.text.Normalizer;
@@ -18,8 +20,19 @@ import java.util.*;
 @Service
 public class Catalog {
     public record Doc(String id, String date, String sender, String main, String type,
-                      String filename, String path, List<String> tags, String sha256) {
+                      String filename, String path, List<String> tags, String sha256, Instant createdAt) {
+        public String createdAtLabel() {
+            return createdAt == null ? "Unbekannt (Bestand)" : CAPTURE_LABEL.format(createdAt);
+        }
     }
+
+    public record SearchPage(List<Doc> docs, int total, int page, int pageCount) {
+    }
+
+    public static final int PAGE_SIZE = 30;
+    private static final ZoneId CAPTURE_ZONE = ZoneId.of("Europe/Berlin");
+    private static final DateTimeFormatter CAPTURE_FORMAT = new DateTimeFormatterBuilder().appendInstant(3).toFormatter();
+    private static final DateTimeFormatter CAPTURE_LABEL = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm:ss z", Locale.GERMANY).withZone(CAPTURE_ZONE);
 
     public record Metadata(String date, String sender, String main, String type, List<String> tags) {
     }
@@ -58,6 +71,7 @@ public class Catalog {
         db.execute("CREATE TABLE IF NOT EXISTS documents(id TEXT PRIMARY KEY, date TEXT NOT NULL, sender TEXT NOT NULL, main TEXT NOT NULL, type TEXT NOT NULL, filename TEXT NOT NULL, path TEXT UNIQUE NOT NULL, sha256 TEXT)");
         db.execute("CREATE TABLE IF NOT EXISTS document_tags(document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE, tag TEXT NOT NULL, PRIMARY KEY(document_id,tag))");
         migrateHashes();
+        migrateCreatedAt();
         backfillHashes();
         for (String s : List.of("Finanzen", "Wohnen", "Versicherungen", "Gesundheit")) label("main", s);
         for (String s : List.of("Rechnung", "Info", "Newsletter")) label("type", s);
@@ -73,6 +87,18 @@ public class Catalog {
             // Neue Dubletten werden auch bei konkurrierenden INSERTs atomar verhindert.
             db.execute("CREATE TRIGGER IF NOT EXISTS documents_reject_duplicate_hash BEFORE INSERT ON documents WHEN NEW.sha256 IS NOT NULL AND EXISTS(SELECT 1 FROM documents WHERE sha256=NEW.sha256) BEGIN SELECT RAISE(ABORT, 'duplicate_sha256'); END");
             if (db.queryForObject("PRAGMA user_version", Integer.class) < 1) db.execute("PRAGMA user_version=1");
+        });
+    }
+
+    private void migrateCreatedAt() {
+        tx.executeWithoutResult(status -> {
+            boolean present = db.queryForList("PRAGMA table_info(documents)").stream()
+                    .anyMatch(c -> "created_at".equals(c.get("name")));
+            // Keine erfundenen Erfassungszeiten für bereits vorhandene Einträge.
+            if (!present) db.execute("ALTER TABLE documents ADD COLUMN created_at TEXT");
+            db.execute("CREATE INDEX IF NOT EXISTS documents_created_at ON documents(created_at DESC)");
+            db.execute("CREATE TRIGGER IF NOT EXISTS documents_created_at_immutable BEFORE UPDATE OF created_at ON documents WHEN NEW.created_at IS NOT OLD.created_at BEGIN SELECT RAISE(ABORT, 'created_at_immutable'); END");
+            if (db.queryForObject("PRAGMA user_version", Integer.class) < 2) db.execute("PRAGMA user_version=2");
         });
     }
 
@@ -154,7 +180,7 @@ public class Catalog {
     }
 
     public Doc get(String id) {
-        return db.query("SELECT * FROM documents WHERE id=?", (r, n) -> new Doc(r.getString("id"), r.getString("date"), r.getString("sender"), r.getString("main"), r.getString("type"), r.getString("filename"), r.getString("path"), db.queryForList("SELECT tag FROM document_tags WHERE document_id=? ORDER BY tag", String.class, id), r.getString("sha256")), id)
+        return db.query("SELECT * FROM documents WHERE id=?", (r, n) -> new Doc(r.getString("id"), r.getString("date"), r.getString("sender"), r.getString("main"), r.getString("type"), r.getString("filename"), r.getString("path"), db.queryForList("SELECT tag FROM document_tags WHERE document_id=? ORDER BY tag", String.class, id), r.getString("sha256"), r.getString("created_at") == null ? null : Instant.parse(r.getString("created_at"))), id)
                 .stream().findFirst().orElseThrow(() -> new IllegalArgumentException("Dokument nicht gefunden."));
     }
 
@@ -163,6 +189,11 @@ public class Catalog {
     }
 
     public List<Doc> search(String query, String period, String main, String type, List<String> tags, boolean undated) {
+        return search(query, period, main, type, tags, undated, "");
+    }
+
+    public List<Doc> search(String query, String period, String main, String type, List<String> tags, boolean undated, String createdPeriod) {
+        Instant[] captured = captureBounds(createdPeriod);
         String selectedPeriod = period == null ? "" : period.trim();
         // "Ohne Datum" und ein Zeitraum sind alternativ, auch ohne JavaScript.
         if (!undated && !selectedPeriod.isEmpty()) {
@@ -173,12 +204,53 @@ public class Catalog {
             else java.time.Year.parse(selectedPeriod);
         }
         String q = key(query == null ? "" : query);
-        return db.queryForList("SELECT id FROM documents ORDER BY date DESC,filename", String.class).stream().map(this::get)
-                .filter(d -> q.isEmpty() || key(d.filename() + " " + d.sender() + " " + d.main() + " " + d.type() + " " + String.join(" ", d.tags())).contains(q))
+        return db.queryForList("SELECT id FROM documents ORDER BY created_at DESC,rowid DESC", String.class).stream().map(this::get)
+                .filter(d -> q.isEmpty() || key(d.filename() + " " + d.sender() + " " + d.main() + " " + d.type() + " " + String.join(" ", d.tags()) + " " + d.createdAtLabel() + " " + (d.createdAt() == null ? "" : d.createdAt())).contains(q))
+                .filter(d -> captured == null || (d.createdAt() != null && !d.createdAt().isBefore(captured[0]) && d.createdAt().isBefore(captured[1])))
                 .filter(d -> undated ? d.date().isEmpty() : (selectedPeriod.isEmpty() || d.date().startsWith(selectedPeriod)))
                 .filter(d -> main == null || main.isBlank() || key(d.main()).equals(key(main)))
                 .filter(d -> type == null || type.isBlank() || key(d.type()).equals(key(type)))
                 .filter(d -> tags == null || tags.stream().allMatch(t -> d.tags().stream().anyMatch(s -> key(s).equals(key(t))))).toList();
+    }
+
+    public SearchPage page(String query, String period, String main, String type, List<String> tags,
+                           boolean undated, String createdPeriod, int requestedPage) {
+        // Die normale Startseite lädt nur die benötigten 30 Datensätze.
+        if ((query == null || query.isBlank()) && (period == null || period.isBlank())
+                && (main == null || main.isBlank()) && (type == null || type.isBlank())
+                && (tags == null || tags.isEmpty()) && !undated && (createdPeriod == null || createdPeriod.isBlank())) {
+            int total = db.queryForObject("SELECT count(*) FROM documents", Integer.class);
+            int pages = Math.max(1, (total + PAGE_SIZE - 1) / PAGE_SIZE);
+            int page = Math.max(1, Math.min(requestedPage, pages));
+            List<Doc> docs = db.queryForList("SELECT id FROM documents ORDER BY created_at DESC,rowid DESC LIMIT ? OFFSET ?",
+                    String.class, PAGE_SIZE, (page - 1) * PAGE_SIZE).stream().map(this::get).toList();
+            return new SearchPage(docs, total, page, pages);
+        }
+        List<Doc> matches = search(query, period, main, type, tags, undated, createdPeriod);
+        int pages = Math.max(1, (matches.size() + PAGE_SIZE - 1) / PAGE_SIZE);
+        int page = Math.max(1, Math.min(requestedPage, pages));
+        int start = (page - 1) * PAGE_SIZE;
+        return new SearchPage(List.copyOf(matches.subList(start, Math.min(start + PAGE_SIZE, matches.size()))), matches.size(), page, pages);
+    }
+
+    private static Instant[] captureBounds(String period) {
+        if (period == null || period.isBlank()) return null;
+        String value = period.trim();
+        if (!value.matches("\\d{4}(-\\d{2})?(-\\d{2})?"))
+            throw new IllegalArgumentException("Erfasst am als JJJJ, JJJJ-MM oder JJJJ-MM-TT eingeben.");
+        LocalDate start;
+        LocalDate end;
+        if (value.length() == 4) {
+            start = Year.parse(value).atDay(1);
+            end = start.plusYears(1);
+        } else if (value.length() == 7) {
+            start = YearMonth.parse(value).atDay(1);
+            end = start.plusMonths(1);
+        } else {
+            start = LocalDate.parse(value);
+            end = start.plusDays(1);
+        }
+        return new Instant[]{start.atStartOfDay(CAPTURE_ZONE).toInstant(), end.atStartOfDay(CAPTURE_ZONE).toInstant()};
     }
 
     private String relative(Metadata m, String filename) {
@@ -233,7 +305,7 @@ public class Catalog {
             Files.move(staged, destination);
             try {
                 tx.executeWithoutResult(status -> {
-                    db.update("INSERT INTO documents(id,date,sender,main,type,filename,path,sha256) VALUES(?,?,?,?,?,?,?,?)", id, m.date(), m.sender(), m.main(), m.type(), finalName, finalRel, hash);
+                    db.update("INSERT INTO documents(id,date,sender,main,type,filename,path,sha256,created_at) VALUES(?,?,?,?,?,?,?,?,?)", id, m.date(), m.sender(), m.main(), m.type(), finalName, finalRel, hash, CAPTURE_FORMAT.format(Instant.now()));
                     tags(id, m.tags());
                 });
             } catch (RuntimeException e) {

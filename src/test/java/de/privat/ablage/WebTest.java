@@ -80,7 +80,7 @@ class WebTest {
             .andExpect(status().is3xxRedirection()).andExpect(flash().attributeExists("duplicates"))
             .andExpect(flash().attributeCount(1)).andReturn();
         mvc.perform(get("/").flashAttrs(response.getFlashMap())).andExpect(status().isOk())
-            .andExpect(content().string(org.hamcrest.Matchers.containsString("Die Datei existiert bereits.")))
+            .andExpect(content().string(org.hamcrest.Matchers.matchesPattern("(?s).*Die Datei existiert\\s+bereits\\..*")))
             .andExpect(content().string(org.hamcrest.Matchers.containsString("href=\"/documents/"+existing.id()+"/edit\"")));
         assertThat(catalog.search("Anderer Name.pdf","","","",java.util.List.of())).isEmpty();
         assertThat(catalog.get(existing.id()).sender()).isEqualTo("ADAC");
@@ -219,5 +219,43 @@ class WebTest {
             .andExpect(status().isOk()).andExpect(model().attribute("docs",java.util.List.of(dated)));
         mvc.perform(get("/").param("q","FilterDatum"))
             .andExpect(status().isOk()).andExpect(model().attribute("docs",org.hamcrest.Matchers.hasSize(2)));
+    }
+    @org.springframework.beans.factory.annotation.Autowired org.springframework.jdbc.core.JdbcTemplate captureDb;
+    Catalog.Doc webCaptured(String name,String created) {
+        String id=java.util.UUID.randomUUID().toString();
+        captureDb.update("INSERT INTO documents(id,date,sender,main,type,filename,path,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            id,"","HTTP Archiv","Finanzen","Info",name,"http-fixtures/"+id+"/"+name,created);
+        return catalog.get(id);
+    }
+    @Test void homepageDefaultsToThirtyNewestAndPreservesFiltersWhenPaging() throws Exception {
+        var inserted=new java.util.ArrayList<Catalog.Doc>();
+        for(int i=0;i<35;i++) inserted.add(webCaptured("Seitenprobe "+i+".pdf",
+            java.time.Instant.parse("2099-10-28T12:00:00Z").plusSeconds(i).toString()));
+        var response=mvc.perform(get("/")).andExpect(status().isOk())
+            .andExpect(model().attribute("docs",org.hamcrest.Matchers.hasSize(30))).andReturn();
+        var visible=(java.util.List<Catalog.Doc>)response.getModelAndView().getModel().get("docs");
+        assertThat(visible.getFirst().id()).isEqualTo(inserted.getLast().id());
+        assertThat(visible.getLast().id()).isEqualTo(inserted.get(5).id());
+        mvc.perform(get("/").param("q","Seitenprobe").param("createdPeriod","2099").param("undated","true").param("main","Finanzen"))
+            .andExpect(status().isOk()).andExpect(model().attribute("docs",org.hamcrest.Matchers.hasSize(30)))
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("page=2")))
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("createdPeriod=2099")))
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("q=Seitenprobe")));
+        mvc.perform(get("/").param("q","Seitenprobe").param("createdPeriod","2099").param("page","2"))
+            .andExpect(status().isOk()).andExpect(model().attribute("docs",org.hamcrest.Matchers.hasSize(5)));
+    }
+    @Test void captureTimestampIsDisplayedWithoutEditableFieldAndCannotBeForged() throws Exception {
+        var doc=document("Erfassung unveraenderlich.pdf");
+        mvc.perform(get("/documents/"+doc.id()+"/edit")).andExpect(status().isOk())
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("Erfasst am:")))
+            .andExpect(content().string(org.hamcrest.Matchers.containsString(doc.createdAtLabel())))
+            .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("name=\"createdAt\""))));
+        mvc.perform(post("/documents/"+doc.id()+"/edit").with(csrf()).param("date",doc.date()).param("sender",doc.sender())
+            .param("main",doc.main()).param("type",doc.type()).param("createdAt","2000-01-01T00:00:00Z"))
+            .andExpect(status().is3xxRedirection());
+        assertThat(catalog.get(doc.id()).createdAt()).isEqualTo(doc.createdAt());
+        var wanted=webCaptured("Erfassungsfilter HTTP.pdf","2098-10-28T11:00:00.000Z");
+        mvc.perform(get("/").param("q","Erfassungsfilter HTTP").param("createdPeriod","2098-10-28"))
+            .andExpect(status().isOk()).andExpect(model().attribute("docs",java.util.List.of(wanted)));
     }
 }
