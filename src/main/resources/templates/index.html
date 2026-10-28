@@ -59,7 +59,7 @@
             </thead>
             <tbody>
             <tr th:each="d:${docs}">
-                <td><strong th:text="${d.filename}"></strong><small th:text="${d.sender}"></small></td>
+                <td><a th:href="@{/documents/{id}/edit(id=${d.id})}"><strong th:text="${d.filename}"></strong></a><small th:text="${d.sender}"></small></td>
                 <td th:text="${#strings.isEmpty(d.date) ? 'Ohne Datum' : d.date}"></td>
                 <td th:text="${d.createdAtLabel()}"></td>
                 <td><span class="badge" th:text="${d.main}"></span><small th:text="${d.type}"></small></td>
