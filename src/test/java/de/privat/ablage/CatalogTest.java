@@ -627,4 +627,58 @@ class CatalogTest {
         assertThat(catalog.search("Steuer","","","",List.of())).containsExactly(doc);
         assertThat(catalog.page("","","Häuser","",List.of(),false,"","Steuer",1).docs()).isEmpty();
     }
+    Catalog.Metadata senderMeta(String sender,String child) {
+        return new Catalog.Metadata("2026-04-27",sender,"Finanzen","Info",List.of("Todo"),"Notiz",child);
+    }
+    @Test void unknownSenderOmitsOnlyTheSenderDirectoryWithOrWithoutSubcategoryAndDate() throws Exception {
+        assertThat(catalog.labels("sender")).contains("Unbekannt");
+        int i=0;
+        for(String child:List.of("","Steuern")) for(String date:List.of("","2026-04-27")) {
+            String name="Notiz "+i+".pdf";
+            var doc=catalog.upload(new MockMultipartFile("files",name,"application/pdf",new byte[]{(byte)(120+i++)}),
+                new Catalog.Metadata(date," UNBEKANNT ","Finanzen","Info",List.of(),"",child));
+            assertThat(doc.sender()).isEqualTo("Unbekannt");
+            assertThat(doc.path()).isEqualTo("Finanzen/"+(child.isEmpty()?"":child+"/")+(date.isEmpty()?"":date+"_")+name);
+            assertThat(catalog.file(doc.path())).exists();
+        }
+        assertThat(Path.of(catalog.root()).resolve("Finanzen/Unbekannt")).doesNotExist();
+        assertThat(Path.of(catalog.root()).resolve("Finanzen/Steuern/Unbekannt")).doesNotExist();
+        assertThat(catalog.check().missing()).isEmpty();assertThat(catalog.check().uncatalogued()).isEmpty();
+    }
+    @Test void normalSenderAndAnUnknownNamedSubcategoryAreStillUsedAsDirectories() throws Exception {
+        var known=catalog.upload(upload(),senderMeta("Sparkasse","Steuern"));
+        assertThat(known.path()).isEqualTo("Finanzen/Steuern/Sparkasse/2026-04-27_Kontoauszug.pdf");
+        var similar=catalog.upload(differentUpload(),senderMeta("Unbekannter Absender",""));
+        assertThat(similar.path()).contains("/Unbekannter Absender/");
+        var child=catalog.upload(new MockMultipartFile("files","Unterkategorie.pdf","application/pdf",new byte[]{125,126}),senderMeta("Unbekannt","Unbekannt"));
+        assertThat(child.path()).isEqualTo("Finanzen/Unbekannt/2026-04-27_Unterkategorie.pdf");
+    }
+    @Test void switchingFromUnknownToKnownSenderAndBackRequiresConfirmation() throws Exception {
+        var old=catalog.upload(upload(),senderMeta("Unbekannt","Steuern"));
+        assertThatThrownBy(()->catalog.update(old.id(),senderMeta("Sparkasse","Steuern"),false)).isInstanceOf(IllegalArgumentException.class);
+        var known=catalog.update(old.id(),senderMeta("Sparkasse","Steuern"),true);
+        assertThat(known.path()).contains("/Steuern/Sparkasse/");assertThat(catalog.file(old.path())).doesNotExist();
+        assertThatThrownBy(()->catalog.update(old.id(),senderMeta("Unbekannt","Steuern"),false)).isInstanceOf(IllegalArgumentException.class);
+        var restored=catalog.update(old.id(),senderMeta("Unbekannt","Steuern"),true);
+        assertThat(restored.path()).isEqualTo(old.path());assertThat(catalog.file(known.path())).doesNotExist();
+        assertThat(restored.createdAt()).isEqualTo(old.createdAt());assertThat(restored.sha256()).isEqualTo(old.sha256());
+        assertThat(restored.comment()).isEqualTo("Notiz");
+    }
+    @Test void omittingUnknownSenderDirectoryDoesNotOverwriteRegisteredOrUnknownFiles() throws Exception {
+        var target=catalog.upload(upload(),senderMeta("Unbekannt","Steuern"));
+        var source=catalog.upload(differentUpload(),senderMeta("Sparkasse","Steuern"));
+        assertThatThrownBy(()->catalog.update(source.id(),senderMeta("Unbekannt","Steuern"),true)).isInstanceOf(IllegalArgumentException.class);
+        catalog.delete(target.id(),false,true);
+        assertThatThrownBy(()->catalog.update(source.id(),senderMeta("Unbekannt","Steuern"),true)).isInstanceOf(FileAlreadyExistsException.class);
+        assertThat(catalog.get(source.id()).sender()).isEqualTo("Sparkasse");
+        assertThat(Files.readAllBytes(catalog.file(target.path()))).containsExactly(new byte[]{1,2,3,4});
+        assertThat(Files.readAllBytes(catalog.file(source.path()))).containsExactly(new byte[]{9,8,7});
+    }
+    @Test void existingKnownSenderFilesAreNotMovedAndDuplicateDetectionIsUnchanged() throws Exception {
+        var old=catalog.upload(upload(),metadata());setup();
+        assertThat(catalog.get(old.id()).path()).isEqualTo(old.path());assertThat(catalog.file(old.path())).exists();
+        assertThatThrownBy(()->catalog.upload(upload(),senderMeta("Unbekannt",""))).isInstanceOfSatisfying(Catalog.DuplicateDocumentException.class,
+            e->assertThat(e.existing().id()).isEqualTo(old.id()));
+        assertThat(catalog.get(old.id()).sender()).isEqualTo(old.sender());
+    }
 }

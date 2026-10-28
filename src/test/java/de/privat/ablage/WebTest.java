@@ -362,4 +362,30 @@ class WebTest {
         mvc.perform(get("/").param("subcategory",scope).param("main","Finanzen").param("page","2"))
             .andExpect(status().isOk()).andExpect(model().attribute("docs",org.hamcrest.Matchers.hasSize(1)));
     }
+    @Test void unknownSenderIsSuggestedAndUploadsHaveNoSenderDirectory() throws Exception {
+        mvc.perform(get("/upload")).andExpect(status().isOk()).andExpect(content().string(org.hamcrest.Matchers.containsString("value=\"Unbekannt\"")));
+        for(int i=0;i<2;i++) {
+            String child=i==0?"":"Steuern";String name="OhneAbsenderHTTP "+i+".pdf";
+            byte[] bytes={(byte)(114+i),116};
+            mvc.perform(multipart("/upload").file(new MockMultipartFile("files",name,"application/pdf",bytes))
+                .param("sender","Unbekannt").param("main","Finanzen").param("type","Info").param("subcategory",child).with(csrf()))
+                .andExpect(status().is3xxRedirection());
+            var doc=catalog.search(name,"","","",java.util.List.of()).getFirst();
+            assertThat(doc.path()).isEqualTo("Finanzen/"+(child.isEmpty()?"":child+"/")+name);
+            mvc.perform(get("/documents/"+doc.id()+"/file")).andExpect(status().isOk()).andExpect(content().bytes(bytes));
+            mvc.perform(get("/documents/"+doc.id()+"/edit")).andExpect(status().isOk());
+        }
+    }
+    @Test void senderChangeToUnknownRequiresConfirmationAndMovesFile() throws Exception {
+        var old=document("Absenderwechsel HTTP.pdf");String route="/documents/"+old.id()+"/edit";
+        mvc.perform(post(route).with(csrf()).param("date",old.date()).param("sender","Unbekannt").param("main",old.main()).param("type",old.type()))
+            .andExpect(status().isBadRequest());
+        mvc.perform(post(route).with(csrf()).param("date",old.date()).param("sender","Unbekannt").param("main",old.main()).param("type",old.type()).param("confirmed","true"))
+            .andExpect(status().is3xxRedirection());
+        assertThat(catalog.get(old.id()).path()).isEqualTo("Finanzen/2025-10-27_Absenderwechsel HTTP.pdf");
+        assertThat(catalog.file(old.path())).doesNotExist();
+        mvc.perform(post(route).with(csrf()).param("date",old.date()).param("sender",old.sender()).param("main",old.main()).param("type",old.type()).param("confirmed","true"))
+            .andExpect(status().is3xxRedirection());
+        assertThat(catalog.get(old.id()).path()).isEqualTo(old.path());
+    }
 }

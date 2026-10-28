@@ -40,6 +40,7 @@
                                                                                         maxlength="120"></label><label>Haupttag
             *<input id="mainCategory" name="main" list="mains" th:value="${doc.main}" required maxlength="120"></label><label>Dokumententyp
             *<input name="type" list="types" th:value="${doc.type}" required maxlength="120"></label></div>
+        <p class="hint">Kein Absender bekannt? Wähle „Unbekannt“. Dann entfällt der Absenderordner.</p>
         <label>Unterkategorie (optional)<input id="subcategory" name="subcategory" list="subcategoryList" th:value="${doc.subcategory}" maxlength="120" placeholder="Auswählen oder neu anlegen"></label>
         <p class="hint">Unterkategorien gehören zur gewählten Hauptkategorie. Leer lassen für die bisherige Ordnerstruktur.</p>
         <label>Zusätzliche Tags<input id="tagInput" name="tags" list="extras"

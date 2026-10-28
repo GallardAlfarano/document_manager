@@ -87,6 +87,7 @@ public class Catalog {
         for (String s : List.of("Finanzen", "Wohnen", "Versicherungen", "Gesundheit")) label("main", s);
         for (String s : List.of("Rechnung", "Info", "Newsletter")) label("type", s);
         for (String s : List.of("Relevant für Steuererklärung", "Todo")) label("extra", s);
+        label("sender", "Unbekannt");
     }
 
     private void migrateHashes() {
@@ -333,7 +334,9 @@ public class Catalog {
     }
 
     private String relative(Metadata m, String filename) {
-        return m.main() + "/" + (m.subcategory().isEmpty() ? "" : m.subcategory() + "/") + m.sender() + "/" + (m.date().isEmpty() ? "" : m.date() + "_") + filename;
+        return m.main() + "/" + (m.subcategory().isEmpty() ? "" : m.subcategory() + "/")
+                + (key(m.sender()).equals("unbekannt") ? "" : m.sender() + "/")
+                + (m.date().isEmpty() ? "" : m.date() + "_") + filename;
     }
 
     public Path file(String relative) throws IOException {
