@@ -295,4 +295,32 @@ class WebTest {
         var docs=catalog.search("Nachreichung","","","",java.util.List.of());
         assertThat(docs).hasSize(1);assertThat(docs.getFirst().comment()).isEqualTo("Telefonat\nNachreichung vereinbart.");
     }
+    @Test void browserUploadAndRenameAvoidDuplicateDatePrefixes() throws Exception {
+        mvc.perform(multipart("/upload").file(new MockMultipartFile("files","2026-04-27_2026-04-27_HTTP Präfix.pdf","application/pdf",new byte[]{109,110}))
+            .param("date","2026-04-27").param("sender","Prefix HTTP").param("main","Finanzen").param("type","Info").with(csrf()))
+            .andExpect(status().is3xxRedirection());
+        var doc=catalog.search("HTTP Präfix","","","",java.util.List.of()).getFirst();
+        assertThat(doc.filename()).isEqualTo("HTTP Präfix.pdf");assertThat(doc.path()).endsWith("/2026-04-27_HTTP Präfix.pdf");
+        mvc.perform(post("/documents/"+doc.id()+"/edit").with(csrf()).param("date",doc.date()).param("sender",doc.sender())
+            .param("main",doc.main()).param("type",doc.type()).param("filename","2025-01-01_2024-01-01_HTTP Umbenannt.pdf").param("confirmed","true"))
+            .andExpect(status().is3xxRedirection());
+        assertThat(catalog.get(doc.id()).path()).endsWith("/2026-04-27_HTTP Umbenannt.pdf");
+    }
+    @Test void editPageProposesCanonicalLegacyNameButRequiresConfirmationToSave() throws Exception {
+        var doc=document("BrowserPrefixLegacy.pdf");String legacyName=doc.date()+"_"+doc.filename();
+        String legacyPath="Finanzen/ADAC/"+doc.date()+"_"+legacyName;
+        java.nio.file.Files.move(catalog.file(doc.path()),catalog.file(legacyPath));
+        captureDb.update("UPDATE documents SET filename=?,path=? WHERE id=?",legacyName,legacyPath,doc.id());
+        String route="/documents/"+doc.id()+"/edit";
+        mvc.perform(get(route)).andExpect(status().isOk()).andExpect(model().attribute("editFilename","BrowserPrefixLegacy.pdf"))
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("data-filename=\""+legacyName+"\"")));
+        assertThat(catalog.get(doc.id()).path()).isEqualTo(legacyPath);
+        mvc.perform(post(route).with(csrf()).param("date",doc.date()).param("sender",doc.sender()).param("main",doc.main())
+            .param("type",doc.type()).param("filename","BrowserPrefixLegacy.pdf")).andExpect(status().isBadRequest());
+        mvc.perform(post(route).with(csrf()).param("date",doc.date()).param("sender",doc.sender()).param("main",doc.main())
+            .param("type",doc.type()).param("filename","BrowserPrefixLegacy.pdf").param("confirmed","true"))
+            .andExpect(status().is3xxRedirection());
+        assertThat(catalog.get(doc.id()).path()).isEqualTo(doc.path());
+        assertThat(catalog.get(doc.id()).createdAt()).isEqualTo(doc.createdAt());
+    }
 }

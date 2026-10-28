@@ -30,9 +30,9 @@
     <form method="post" th:action="@{/documents/{id}/edit(id=${doc.id})}" class="panel" id="editForm"
           th:attr="data-date=${doc.date},data-sender=${doc.sender},data-main=${doc.main},data-filename=${doc.filename}">
         <input type="hidden" name="confirmed" id="confirmed" value="false"><label>Dateiname (mit Dateiendung, ohne
-        Datum) *<input name="filename" th:value="${doc.filename}" required maxlength="120"></label>
+        Datum) *<input name="filename" th:value="${editFilename}" required maxlength="120"></label>
         <p class="hint">Bei vorhandenem Datum wird der Datumsprefix automatisch ergänzt: JJJJ-MM-TT_Dateiname.pdf. Ohne
-            Datum wird nur der Dateiname verwendet. Bestehende Dateien werden niemals überschrieben.</p>
+            Datum wird nur der Dateiname verwendet. Vorhandene Prefixe im Format JJJJ-MM-TT_ werden bei gesetztem Dokumentdatum entfernt, sofern ein Basisname übrig bleibt. Ein reiner Datumsname wie 2026-04-27.pdf bleibt erhalten. Bestehende Dateien werden niemals überschrieben.</p>
         <div class="grid"><label>Datum (optional)<input type="date" name="date" th:value="${doc.date}"><small>Leer
             lassen, wenn kein Datum bekannt ist.</small></label><label>Absender *<input name="sender" list="senders"
                                                                                         th:value="${doc.sender}"

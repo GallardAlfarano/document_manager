@@ -462,4 +462,88 @@ class CatalogTest {
             .isInstanceOf(RuntimeException.class);
         assertThat(catalog.get(doc.id()).comment()).isEqualTo("Vorher");
     }
+    @Test void prefixNormalizationOnlyRemovesValidDatesWithRemainingBaseName() {
+        String[][] cases={
+            {"2026-04-27_Übersicht.pdf","Übersicht.pdf"},
+            {"2026-04-27_2025-01-01_Übersicht.pdf","Übersicht.pdf"},
+            {"2026-04-27.pdf","2026-04-27.pdf"},
+            {"2026-04-27_2026-04-27.pdf","2026-04-27.pdf"},
+            {"2026-04-27_2026-04-27","2026-04-27"},
+            {"2026-04-27_.pdf","2026-04-27_.pdf"},
+            {"2026-04-27_ .pdf","2026-04-27_ .pdf"},
+            {"2026-04-27_","2026-04-27_"},
+            {"2026-02-30_Name.pdf","2026-02-30_Name.pdf"},
+            {"Übersicht_2026-04-27.pdf","Übersicht_2026-04-27.pdf"},
+            {"2026-04-27_Name","Name"},
+            {"2026-04-27_.config.json",".config.json"}
+        };
+        for(String[] c:cases) {
+            assertThat(Catalog.baseFilename(c[0],"2026-04-27")).isEqualTo(c[1]);
+            assertThat(Catalog.baseFilename(c[1],"2026-04-27")).isEqualTo(c[1]);
+            assertThat(Catalog.baseFilename(c[0],"")).isEqualTo(c[0]);
+            assertThat(Catalog.baseFilename(c[0],null)).isEqualTo(c[0]);
+        }
+    }
+    @Test void uploadStoresCanonicalBaseNameWithAuthoritativeDocumentDate() throws Exception {
+        var doc=catalog.upload(new MockMultipartFile("files","2026-04-27_2024-01-01_Übersicht.pdf","application/pdf",new byte[]{1,2,3,4}),
+            new Catalog.Metadata("2026-04-27","Sparkasse","Finanzen","Info",List.of()));
+        assertThat(doc.filename()).isEqualTo("Übersicht.pdf");
+        assertThat(doc.path()).isEqualTo("Finanzen/Sparkasse/2026-04-27_Übersicht.pdf");
+        assertThat(Files.readAllBytes(catalog.file(doc.path()))).containsExactly(new byte[]{1,2,3,4});
+    }
+    @Test void dateOnlyFilenameIsRetainedAndUndatedUploadsKeepTheirFullName() throws Exception {
+        var dated=catalog.upload(new MockMultipartFile("files","2026-04-27.pdf","application/pdf",new byte[]{101,102}),
+            new Catalog.Metadata("2026-04-27","Sparkasse","Finanzen","Info",List.of()));
+        assertThat(dated.filename()).isEqualTo("2026-04-27.pdf");
+        assertThat(dated.path()).isEqualTo("Finanzen/Sparkasse/2026-04-27_2026-04-27.pdf");
+        var undated=catalog.upload(new MockMultipartFile("files","2026-04-27_2025-01-01_Übersicht.pdf","application/pdf",new byte[]{103,104}),
+            new Catalog.Metadata(null,"Sparkasse","Finanzen","Info",List.of()));
+        assertThat(undated.filename()).isEqualTo("2026-04-27_2025-01-01_Übersicht.pdf");
+        assertThat(undated.path()).isEqualTo("Finanzen/Sparkasse/"+undated.filename());
+    }
+    @Test void renamingWithPrefixesKeepsContentHashAndCaptureTime() throws Exception {
+        var doc=catalog.upload(upload(),metadata());
+        var renamed=catalog.update(doc.id(),metadata(),"2024-01-01_2023-02-02_Umbenannt.pdf",true);
+        assertThat(renamed.filename()).isEqualTo("Umbenannt.pdf");
+        assertThat(renamed.path()).isEqualTo("Finanzen/Sparkasse/2025-06-10_Umbenannt.pdf");
+        assertThat(renamed.sha256()).isEqualTo(doc.sha256());assertThat(renamed.createdAt()).isEqualTo(doc.createdAt());
+        var pure=catalog.update(doc.id(),metadata(),"2025-06-10.pdf",true);
+        assertThat(pure.path()).isEqualTo("Finanzen/Sparkasse/2025-06-10_2025-06-10.pdf");
+    }
+    @Test void normalizationDoesNotOverwriteFilesDuringUploadOrRename() throws Exception {
+        var first=catalog.upload(new MockMultipartFile("files","2025-06-10_Übersicht.pdf","application/pdf",new byte[]{105,106}),metadata());
+        var second=catalog.upload(new MockMultipartFile("files","2025-06-10_2025-06-10_Übersicht.pdf","application/pdf",new byte[]{107,108}),metadata());
+        assertThat(second.path()).isNotEqualTo(first.path());
+        assertThat(first.path()).isEqualTo("Finanzen/Sparkasse/2025-06-10_Übersicht.pdf");
+        assertThat(second.filename()).startsWith("Übersicht (");
+        assertThat(Files.readAllBytes(catalog.file(first.path()))).containsExactly(new byte[]{105,106});
+        assertThatThrownBy(()->catalog.update(second.id(),metadata(),"2024-01-01_Übersicht.pdf",true)).isInstanceOf(FileAlreadyExistsException.class);
+        assertThat(catalog.get(second.id()).path()).isEqualTo(second.path());
+    }
+    Catalog.Doc doubledLegacyDocument() throws Exception {
+        var doc=catalog.upload(upload(),metadata());
+        String name=doc.date()+"_"+doc.filename();
+        String path="Finanzen/Sparkasse/"+doc.date()+"_"+name;
+        Files.move(catalog.file(doc.path()),catalog.file(path));
+        db.update("UPDATE documents SET filename=?,path=? WHERE id=?",name,path,doc.id());
+        return catalog.get(doc.id());
+    }
+    @Test void existingDoubledNamesAreOnlyRepairedByConfirmedPathEdit() throws Exception {
+        var old=doubledLegacyDocument();setup();
+        assertThat(catalog.get(old.id()).path()).isEqualTo(old.path());
+        var comment=new Catalog.Metadata(old.date(),old.sender(),old.main(),old.type(),old.tags(),"Nur Notiz");
+        assertThat(catalog.update(old.id(),comment,false).path()).isEqualTo(old.path());
+        assertThatThrownBy(()->catalog.update(old.id(),comment,"Kontoauszug.pdf",false)).isInstanceOf(IllegalArgumentException.class);
+        var fixed=catalog.update(old.id(),comment,"Kontoauszug.pdf",true);
+        assertThat(fixed.path()).isEqualTo("Finanzen/Sparkasse/2025-06-10_Kontoauszug.pdf");
+        assertThat(fixed.comment()).isEqualTo("Nur Notiz");assertThat(fixed.sha256()).isEqualTo(old.sha256());
+        assertThat(catalog.file(old.path())).doesNotExist();assertThat(catalog.file(fixed.path())).exists();
+    }
+    @Test void repairingLegacyNameDoesNotOverwriteAnUnknownFile() throws Exception {
+        var old=doubledLegacyDocument();
+        Path occupied=catalog.file("Finanzen/Sparkasse/2025-06-10_Kontoauszug.pdf");Files.writeString(occupied,"Fremde Datei");
+        assertThatThrownBy(()->catalog.update(old.id(),metadata(),"Kontoauszug.pdf",true)).isInstanceOf(FileAlreadyExistsException.class);
+        assertThat(Files.readString(occupied)).isEqualTo("Fremde Datei");
+        assertThat(catalog.get(old.id()).path()).isEqualTo(old.path());assertThat(catalog.file(old.path())).exists();
+    }
 }

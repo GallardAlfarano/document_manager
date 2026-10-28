@@ -97,6 +97,7 @@ public class Web {
             available = false;
         }
         model.addAttribute("doc", doc);
+        model.addAttribute("editFilename", available ? Catalog.baseFilename(doc.filename(), doc.date()) : doc.filename());
         model.addAttribute("originalAvailable", available);
         model.addAttribute("previewKind", preview);
         return "edit";

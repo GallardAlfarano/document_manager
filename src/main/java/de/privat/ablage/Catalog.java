@@ -268,6 +268,27 @@ public class Catalog {
         return new Instant[]{start.atStartOfDay(CAPTURE_ZONE).toInstant(), end.atStartOfDay(CAPTURE_ZONE).toInstant()};
     }
 
+    static String baseFilename(String filename, String documentDate) {
+        if (documentDate == null || documentDate.isBlank()) return filename;
+        String name = filename;
+        while (true) {
+            var match = java.util.regex.Pattern.compile("^(\\d{4}-\\d{2}-\\d{2})_(.+)$").matcher(name);
+            if (!match.matches()) break;
+            try {
+                LocalDate.parse(match.group(1));
+            } catch (java.time.DateTimeException e) {
+                break;
+            }
+            String rest = match.group(2).trim();
+            int dot = rest.lastIndexOf('.');
+            String stem = dot < 0 ? rest : rest.substring(0, dot);
+            // Datum.pdf ist ein echter Basisname; _ .pdf enthält dagegen keinen.
+            if (stem.isBlank()) break;
+            name = rest;
+        }
+        return name;
+    }
+
     private String relative(Metadata m, String filename) {
         return m.main() + "/" + m.sender() + "/" + (m.date().isEmpty() ? "" : m.date() + "_") + filename;
     }
@@ -305,6 +326,7 @@ public class Catalog {
             // Dubletten ändern weder Metadaten noch Tag-Begriffe.
             String filename = component(upload.getOriginalFilename());
             Metadata m = validate(raw);
+            filename = component(baseFilename(filename, m.date()));
             String rel = relative(m, filename);
             Path destination = file(rel);
             // Gleicher Dateiname mit anderem Inhalt: keine vorhandene Datei überschreiben.
@@ -342,10 +364,14 @@ public class Catalog {
 
     public synchronized Doc update(String id, Metadata raw, String filename, boolean confirmed) throws IOException {
         Doc old = get(id);
-        String name = component(filename);
+        String inputName = component(filename);
         // Ältere Aufrufer ohne Kommentarparameter behalten vorhandene Notizen.
         Metadata m = validate(raw.comment() == null
                 ? new Metadata(raw.date(), raw.sender(), raw.main(), raw.type(), raw.tags(), old.comment()) : raw);
+        boolean pathRequested = !old.filename().equals(inputName) || !old.date().equals(m.date())
+                || !old.sender().equals(m.sender()) || !old.main().equals(m.main());
+        // Reine Kommentar-/Tagänderungen bereinigen alte Dateinamen nicht nebenbei.
+        String name = pathRequested ? component(baseFilename(inputName, m.date())) : inputName;
         boolean pathChanged = !old.filename().equals(name) || !old.date().equals(m.date())
                 || !old.sender().equals(m.sender()) || !old.main().equals(m.main());
         // Bestehende Pfade im alten Format bleiben bei reinen Tag-/Typänderungen erhalten.
