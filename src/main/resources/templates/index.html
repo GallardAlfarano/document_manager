@@ -30,8 +30,8 @@
             <option value="">Alle Typen</option>
             <option th:each="v:${types}" th:value="${v}" th:text="${v}" th:selected="${v==type}"></option>
         </select></label></div>
-        <label class="choice"><input id="undated" type="checkbox" name="undated" value="true"
-                                     th:checked="${undated}"><span>Nur Einträge ohne Datum</span></label><label>Zusätzliche
+        <label class="choice"><input id="undated" type="checkbox" name="undated" value="true" th:checked="${undated}"><span>Nur Einträge ohne Datum</span></label>
+        <label>Zusätzliche
         Tags (alle müssen zutreffen)<input id="tagInput" name="tags" list="extras" th:value="${tagQuery}"
                                            placeholder="Relevant für Steuererklärung; Todo"></label>
         <div th:replace="~{fragments :: extras}"></div>
@@ -55,13 +55,13 @@
             </thead>
             <tbody>
             <tr th:each="d:${docs}">
-                <td><strong th:text="${d.filename}"></strong><small th:text="${d.sender}"></small></td>
+                <td><a th:href="@{/documents/{id}/edit(id=${d.id})}"><strong th:text="${d.filename}"></strong></a><small th:text="${d.sender}"></small></td>
                 <td th:text="${#strings.isEmpty(d.date) ? 'Ohne Datum' : d.date}"></td>
                 <td><span class="badge" th:text="${d.main}"></span><small th:text="${d.type}"></small></td>
                 <td><span class="badge" th:each="t:${d.tags}" th:text="${t}"></span></td>
-                <td><a th:href="@{/documents/{id}/file(id=${d.id})}">Original</a> · <a
-                        th:href="@{/documents/{id}/edit(id=${d.id})}">Bearbeiten</a> · <a class="danger-link"
-                                                                                          th:href="@{/documents/{id}/delete(id=${d.id})}">Löschen</a>
+                <td><a th:href="@{/documents/{id}/file(id=${d.id})}">Original</a> ·
+                    <a th:href="@{/documents/{id}/edit(id=${d.id})}">Bearbeiten</a> ·
+                    <a class="danger-link" th:href="@{/documents/{id}/delete(id=${d.id})}">Löschen</a>
                 </td>
             </tr>
             </tbody>
