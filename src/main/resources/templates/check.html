@@ -1,9 +1,18 @@
 <!doctype html>
 <html lang="de" xmlns:th="http://www.thymeleaf.org">
-<head th:replace="~{fragments :: head('Dateiabgleich')}"></head>
+<head th:replace="~{fragments :: head('Datenbank-Tools')}"></head>
 <body>
 <header th:replace="~{fragments :: nav}"></header>
-<main><h1>Dateiabgleich</h1>
+<main><h1>Datenbank-Tools</h1>
+    <p class="notice" role="status" th:if="${notice}" th:text="${notice}"></p>
+    <section class="panel">
+        <h2>Leere Ordner bereinigen</h2>
+        <p>Entfernt ausschließlich tatsächlich leere Ordner innerhalb der Originaldatei-Ablage. Leere Unterordner werden zuerst entfernt; anschließend können dadurch leer gewordene Elternordner folgen. Der Stammordner bleibt bestehen.</p>
+        <p>Dateien, versteckte Dateien und Links bleiben erhalten. Die Datenbank wird dafür weder ausgewertet noch verändert.</p>
+        <form method="post" th:action="@{/check/empty-directories}"><button>Leere Ordner löschen</button></form>
+        <div th:if="${cleanupFailures}"><h3>Nicht vollständig bereinigte Bereiche</h3><ul><li th:each="failure:${cleanupFailures}" th:text="${failure}"></li></ul></div>
+    </section>
+    <h2>Dateiabgleich</h2>
     <p>Prüft die Dateiablage, ohne Dateien oder Katalogeinträge zu verändern.</p>
     <p>Ablageordner: <code th:text="${root}"></code></p><a class="button" href="/check">Erneut prüfen</a>
     <section class="panel"><h2 th:text="'Fehlende Originaldateien (' + ${#lists.size(check.missing)} + ')'"></h2>

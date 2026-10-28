@@ -681,4 +681,20 @@ class CatalogTest {
             e->assertThat(e.existing().id()).isEqualTo(old.id()));
         assertThat(catalog.get(old.id()).sender()).isEqualTo(old.sender());
     }
+    @Test void cleanupIgnoresCatalogEntriesAndNeverModifiesTheDatabase() throws Exception {
+        var doc=catalog.upload(upload(),metadata());Files.delete(catalog.file(doc.path()));
+        var result=catalog.cleanEmptyDirectories();
+        assertThat(result.deleted()).isEqualTo(2);assertThat(result.failures()).isEmpty();
+        assertThat(catalog.get(doc.id())).isEqualTo(doc);
+        assertThat(catalog.check().missing()).containsExactly(doc.path());
+        assertThat(Path.of(catalog.root())).isDirectory();
+    }
+    @Test void cleanupHasNoDatabaseDependencyAndPreservesUncataloguedFiles() throws Exception {
+        Files.createDirectories(Path.of(catalog.root()).resolve("Leer/Unterordner"));
+        Path unknown=Path.of(catalog.root()).resolve("Unbekannt/Notiz.txt");Files.createDirectories(unknown.getParent());Files.writeString(unknown,"Nicht katalogisiert");
+        db.execute("DROP TABLE documents");
+        assertThat(catalog.cleanEmptyDirectories().deleted()).isEqualTo(2);
+        assertThat(Files.readString(unknown)).isEqualTo("Nicht katalogisiert");
+        assertThat(temp.resolve("test.sqlite")).exists();
+    }
 }

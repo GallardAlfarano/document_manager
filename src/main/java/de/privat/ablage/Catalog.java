@@ -514,6 +514,11 @@ public class Catalog {
         return new DeleteResult(null);
     }
 
+    public synchronized EmptyDirectoryCleaner.Result cleanEmptyDirectories() throws IOException {
+        // Gleiche Sperre wie Upload/Verschieben/Löschen; keinerlei Katalogabfragen nötig.
+        return EmptyDirectoryCleaner.clean(root);
+    }
+
     public synchronized Check check() throws IOException {
         Set<String> known = new HashSet<>(db.queryForList("SELECT path FROM documents", String.class));
         List<String> missing = new ArrayList<>();

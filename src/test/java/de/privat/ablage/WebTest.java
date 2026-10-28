@@ -388,4 +388,28 @@ class WebTest {
             .andExpect(status().is3xxRedirection());
         assertThat(catalog.get(old.id()).path()).isEqualTo(old.path());
     }
+    @Test void databaseToolsCleanupIsAnExplicitCsrfProtectedActionAndShowsCount() throws Exception {
+        Path empty=java.nio.file.Files.createDirectories(Path.of(catalog.root()).resolve("HTTP Cleanup/A/B"));
+        Path kept=Path.of(catalog.root()).resolve("HTTP Cleanup/Behalten/Datei.txt");java.nio.file.Files.createDirectories(kept.getParent());java.nio.file.Files.writeString(kept,"Bleibt");
+        mvc.perform(get("/check")).andExpect(status().isOk())
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("Datenbank-Tools")))
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("Leere Ordner löschen")));
+        assertThat(empty).isDirectory();
+        mvc.perform(post("/check/empty-directories")).andExpect(status().isForbidden());assertThat(empty).isDirectory();
+        var response=mvc.perform(post("/check/empty-directories").with(csrf())).andExpect(status().is3xxRedirection())
+            .andExpect(redirectedUrl("/check")).andReturn();
+        String notice=(String)response.getFlashMap().get("notice");
+        assertThat(Integer.parseInt(notice.split(" ")[0])).isGreaterThanOrEqualTo(2);
+        mvc.perform(get("/check").flashAttrs(response.getFlashMap())).andExpect(status().isOk())
+            .andExpect(content().string(org.hamcrest.Matchers.containsString(notice)));
+        assertThat(empty).doesNotExist();assertThat(java.nio.file.Files.readString(kept)).isEqualTo("Bleibt");
+        assertThat(Path.of(catalog.root())).isDirectory();
+    }
+    @Test void anEmptyArchiveReportsZeroDeletedFolders() throws Exception {
+        // Eigenständige Service-Tests prüfen den exakten Nullfall; im gemeinsamen HTTP-Kontext
+        // erst alle übrigen leeren Ordner entfernen, dann erneut aufrufen.
+        mvc.perform(post("/check/empty-directories").with(csrf())).andExpect(status().is3xxRedirection());
+        mvc.perform(post("/check/empty-directories").with(csrf())).andExpect(status().is3xxRedirection())
+            .andExpect(flash().attribute("notice","0 leere Ordner gelöscht."));
+    }
 }

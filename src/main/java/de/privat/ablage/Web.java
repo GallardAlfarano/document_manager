@@ -192,6 +192,14 @@ public class Web {
         return "check";
     }
 
+    @PostMapping("/check/empty-directories")
+    String cleanEmptyDirectories(RedirectAttributes flash) throws Exception {
+        var result = catalog.cleanEmptyDirectories();
+        flash.addFlashAttribute("notice", result.deleted() + " leere Ordner gelöscht.");
+        if (!result.failures().isEmpty()) flash.addFlashAttribute("cleanupFailures", result.failures());
+        return "redirect:/check";
+    }
+
     @GetMapping("/tags")
     String labels() {
         return "tags";
