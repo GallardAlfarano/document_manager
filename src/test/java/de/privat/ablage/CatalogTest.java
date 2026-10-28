@@ -517,8 +517,11 @@ class CatalogTest {
         assertThat(first.path()).isEqualTo("Finanzen/Sparkasse/2025-06-10_Übersicht.pdf");
         assertThat(second.filename()).startsWith("Übersicht (");
         assertThat(Files.readAllBytes(catalog.file(first.path()))).containsExactly(new byte[]{105,106});
-        assertThatThrownBy(()->catalog.update(second.id(),metadata(),"2024-01-01_Übersicht.pdf",true)).isInstanceOf(FileAlreadyExistsException.class);
+        assertThatThrownBy(()->catalog.update(second.id(),metadata(),"2024-01-01_Übersicht.pdf",true))
+            .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("bereits katalogisiert");
         assertThat(catalog.get(second.id()).path()).isEqualTo(second.path());
+        assertThat(Files.readAllBytes(catalog.file(first.path()))).containsExactly(new byte[]{105,106});
+        assertThat(Files.readAllBytes(catalog.file(second.path()))).containsExactly(new byte[]{107,108});
     }
     Catalog.Doc doubledLegacyDocument() throws Exception {
         var doc=catalog.upload(upload(),metadata());
