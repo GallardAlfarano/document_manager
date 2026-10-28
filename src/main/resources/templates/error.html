@@ -1,1 +1,11 @@
-<!doctype html><html lang="de" xmlns:th="http://www.thymeleaf.org"><head th:replace="~{fragments :: head('Hinweis')}"></head><body><header th:replace="~{fragments :: nav}"></header><main class="narrow panel"><h1>Vorgang nicht abgeschlossen</h1><p role="alert" th:text="${error}"></p><p>Deine bisherigen Dokumente bleiben erhalten. Gehe im Browser zurück, um die Eingaben zu korrigieren.</p><a href="/">Zur Dokumentenübersicht</a></main></body></html>
+<!doctype html>
+<html lang="de" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments :: head('Hinweis')}"></head>
+<body>
+<header th:replace="~{fragments :: nav}"></header>
+<main class="narrow panel"><h1>Vorgang nicht abgeschlossen</h1>
+    <p role="alert" th:text="${error}"></p>
+    <p>Deine bisherigen Dokumente bleiben erhalten. Gehe im Browser zurück, um die Eingaben zu korrigieren.</p><a
+            href="/">Zur Dokumentenübersicht</a></main>
+</body>
+</html>

@@ -1,5 +1,35 @@
-<!doctype html><html lang="de" xmlns:th="http://www.thymeleaf.org"><head th:fragment="head(title)"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title th:text="${title} + ' · Meine Ablage'"></title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head><body>
-<header th:fragment="nav"><a class="brand" href="/">▤ Meine Ablage</a><nav><a href="/">Dokumente</a><a href="/upload">Hinzufügen</a><a href="/tags">Tags verwalten</a><a href="/check">Dateiabgleich</a></nav><span class="local">● Lokal</span></header>
-<div th:fragment="suggestions"><datalist id="mains"><option th:each="v:${mains}" th:value="${v}"></option></datalist><datalist id="types"><option th:each="v:${types}" th:value="${v}"></option></datalist><datalist id="senders"><option th:each="v:${senders}" th:value="${v}"></option></datalist><datalist id="extras"><option th:each="v:${extras}" th:value="${v}"></option></datalist></div>
-<div th:fragment="extras"><p class="hint">Zusätzliche Tags mit Semikolon trennen. Vorhandene Tags anklicken:</p><div class="chips"><button type="button" class="chip" th:each="v:${extras}" th:text="${v}" th:attr="data-tag=${v}"></button></div></div>
-</body></html>
+<!doctype html>
+<html lang="de" xmlns:th="http://www.thymeleaf.org">
+<head th:fragment="head(title)">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title th:text="${title} + ' · Meine Ablage'"></title>
+    <link rel="stylesheet" href="/style.css">
+    <script src="/app.js" defer></script>
+</head>
+<body>
+<header th:fragment="nav"><a class="brand" href="/">▤ Meine Ablage</a>
+    <nav><a href="/">Dokumente</a><a href="/upload">Hinzufügen</a><a href="/tags">Tags verwalten</a><a href="/check">Dateiabgleich</a>
+    </nav>
+    <span class="local">● Lokal</span></header>
+<div th:fragment="suggestions">
+    <datalist id="mains">
+        <option th:each="v:${mains}" th:value="${v}"></option>
+    </datalist>
+    <datalist id="types">
+        <option th:each="v:${types}" th:value="${v}"></option>
+    </datalist>
+    <datalist id="senders">
+        <option th:each="v:${senders}" th:value="${v}"></option>
+    </datalist>
+    <datalist id="extras">
+        <option th:each="v:${extras}" th:value="${v}"></option>
+    </datalist>
+</div>
+<div th:fragment="extras"><p class="hint">Zusätzliche Tags mit Semikolon trennen. Vorhandene Tags anklicken:</p>
+    <div class="chips">
+        <button type="button" class="chip" th:each="v:${extras}" th:text="${v}" th:attr="data-tag=${v}"></button>
+    </div>
+</div>
+</body>
+</html>

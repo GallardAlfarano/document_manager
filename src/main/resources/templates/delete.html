@@ -7,7 +7,8 @@
     <h1>Dokument löschen</h1>
     <section class="panel">
         <h2 th:text="${doc.filename}"></h2>
-        <p><span th:text="${doc.sender}"></span> · <span th:text="${#strings.isEmpty(doc.date) ? 'Ohne Datum' : doc.date}"></span></p>
+        <p><span th:text="${doc.sender}"></span> · <span
+                th:text="${#strings.isEmpty(doc.date) ? 'Ohne Datum' : doc.date}"></span></p>
         <p class="hint">Originaldatei: <code th:text="${doc.path}"></code></p>
         <form method="post" th:action="@{/documents/{id}/delete(id=${doc.id})}">
             <fieldset class="delete-options">
@@ -19,9 +20,12 @@
                     <span><strong>Originaldatei ebenfalls löschen</strong><small>Die Datei wird dauerhaft aus der Ablage entfernt, ohne Papierkorb. Andere Dokumente und Dateien bleiben erhalten.</small></span>
                 </label>
             </fieldset>
-            <p class="delete-warning">Der Eintrag und seine Tag-Zuordnungen werden entfernt. Dieser Vorgang kann in der Anwendung nicht rückgängig gemacht werden.</p>
+            <p class="delete-warning">Der Eintrag und seine Tag-Zuordnungen werden entfernt. Dieser Vorgang kann in der
+                Anwendung nicht rückgängig gemacht werden.</p>
             <label class="choice"><input type="checkbox" name="confirmed" value="true" required><span>Ich bestätige das Löschen mit der oben gewählten Option.</span></label>
-            <div class="actions"><button class="danger">Jetzt löschen</button><a th:href="@{/documents/{id}/edit(id=${doc.id})}">Abbrechen</a></div>
+            <div class="actions">
+                <button class="danger">Jetzt löschen</button>
+                <a th:href="@{/documents/{id}/edit(id=${doc.id})}">Abbrechen</a></div>
         </form>
     </section>
 </main>

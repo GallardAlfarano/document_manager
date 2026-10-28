@@ -1,1 +1,24 @@
-<!doctype html><html lang="de" xmlns:th="http://www.thymeleaf.org"><head th:replace="~{fragments :: head('Tags verwalten')}"></head><body><header th:replace="~{fragments :: nav}"></header><main class="narrow"><h1>Tags verwalten</h1><p>Vorhandene Begriffe nutzen oder neue ergänzen. Groß-/Kleinschreibung und äußere Leerzeichen erzeugen keine Duplikate.</p><p class="notice" th:if="${notice}" th:text="${notice}"></p><form method="post" th:action="@{/tags}" class="panel"><label>Art<select name="kind"><option value="main">Haupttag</option><option value="type">Dokumententyp</option><option value="extra">Zusätzlicher Tag</option><option value="sender">Absender</option></select></label><label>Name<input name="name" required maxlength="120"></label><button>Anlegen</button></form><section class="panel"><h2>Haupttags</h2><span class="badge" th:each="v:${mains}" th:text="${v}"></span><h2>Dokumententypen</h2><span class="badge" th:each="v:${types}" th:text="${v}"></span><h2>Zusätzliche Tags</h2><span class="badge" th:each="v:${extras}" th:text="${v}"></span><h2>Absender</h2><span class="badge" th:each="v:${senders}" th:text="${v}"></span></section></main></body></html>
+<!doctype html>
+<html lang="de" xmlns:th="http://www.thymeleaf.org">
+<head th:replace="~{fragments :: head('Tags verwalten')}"></head>
+<body>
+<header th:replace="~{fragments :: nav}"></header>
+<main class="narrow"><h1>Tags verwalten</h1>
+    <p>Vorhandene Begriffe nutzen oder neue ergänzen. Groß-/Kleinschreibung und äußere Leerzeichen erzeugen keine
+        Duplikate.</p>
+    <p class="notice" th:if="${notice}" th:text="${notice}"></p>
+    <form method="post" th:action="@{/tags}" class="panel"><label>Art<select name="kind">
+        <option value="main">Haupttag</option>
+        <option value="type">Dokumententyp</option>
+        <option value="extra">Zusätzlicher Tag</option>
+        <option value="sender">Absender</option>
+    </select></label><label>Name<input name="name" required maxlength="120"></label>
+        <button>Anlegen</button>
+    </form>
+    <section class="panel"><h2>Haupttags</h2><span class="badge" th:each="v:${mains}" th:text="${v}"></span>
+        <h2>Dokumententypen</h2><span class="badge" th:each="v:${types}" th:text="${v}"></span>
+        <h2>Zusätzliche Tags</h2><span class="badge" th:each="v:${extras}" th:text="${v}"></span>
+        <h2>Absender</h2><span class="badge" th:each="v:${senders}" th:text="${v}"></span></section>
+</main>
+</body>
+</html>
