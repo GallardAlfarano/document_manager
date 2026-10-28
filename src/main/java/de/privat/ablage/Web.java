@@ -59,8 +59,9 @@ public class Web {
 
     @PostMapping("/upload")
     String upload(@RequestParam MultipartFile[] files, @RequestParam(defaultValue = "") String date, @RequestParam String sender,
-                  @RequestParam String main, @RequestParam String type, @RequestParam(defaultValue = "") String tags, RedirectAttributes flash) {
-        var metadata = new Catalog.Metadata(date, sender, main, type, tags(tags));
+                  @RequestParam String main, @RequestParam String type, @RequestParam(defaultValue = "") String tags,
+                  @RequestParam(defaultValue = "") String comment, RedirectAttributes flash) {
+        var metadata = new Catalog.Metadata(date, sender, main, type, tags(tags), comment);
         int count = 0;
         List<String> errors = new ArrayList<>();
         List<DuplicateNotice> duplicates = new ArrayList<>();
@@ -103,9 +104,10 @@ public class Web {
 
     @PostMapping("/documents/{id}/edit")
     String edit(@PathVariable String id, @RequestParam(defaultValue = "") String date, @RequestParam String sender, @RequestParam String main,
-                @RequestParam String type, @RequestParam(required = false) String filename, @RequestParam(defaultValue = "") String tags, @RequestParam(defaultValue = "false") boolean confirmed, RedirectAttributes flash) throws Exception {
+                @RequestParam String type, @RequestParam(required = false) String filename, @RequestParam(defaultValue = "") String tags, @RequestParam(defaultValue = "false") boolean confirmed,
+                @RequestParam(required = false) String comment, RedirectAttributes flash) throws Exception {
         String name = filename == null ? catalog.get(id).filename() : filename;
-        catalog.update(id, new Catalog.Metadata(date, sender, main, type, tags(tags)), name, confirmed);
+        catalog.update(id, new Catalog.Metadata(date, sender, main, type, tags(tags), comment), name, confirmed);
         flash.addFlashAttribute("notice", "Änderungen gespeichert.");
         return "redirect:/";
     }

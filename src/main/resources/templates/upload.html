@@ -23,6 +23,8 @@
         <label>Zusätzliche Tags<input id="tagInput" name="tags" list="extras"
                                       placeholder="Relevant für Steuererklärung; Todo"></label>
         <div th:replace="~{fragments :: extras}"></div>
+        <label>Kommentar (optional)<textarea name="comment" rows="5" maxlength="10000" placeholder="Mehrzeilige Notizen zum Dokument"></textarea></label>
+        <p class="hint">Bis zu 10000 Zeichen. Bei mehreren Dateien gilt der Kommentar für alle ausgewählten Dokumente.</p>
         <p class="hint">Ablage: Haupttag / Absender / Datum_Originaldateiname. Ohne Datum wird kein Datumsprefix
             ergänzt. Die ausgewählte Quelldatei bleibt erhalten.</p>
         <div class="actions">

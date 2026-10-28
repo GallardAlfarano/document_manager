@@ -258,4 +258,41 @@ class WebTest {
         mvc.perform(get("/").param("q","Erfassungsfilter HTTP").param("createdPeriod","2098-10-28"))
             .andExpect(status().isOk()).andExpect(model().attribute("docs",java.util.List.of(wanted)));
     }
+    @Test void multilineCommentCanBeEditedSearchedAndClearedThroughBrowser() throws Exception {
+        var doc=document("Kommentartest.pdf");String route="/documents/"+doc.id()+"/edit";
+        String comment="Rückruf beim Anbieter\nKulanzregelung noch offen.";
+        mvc.perform(post(route).with(csrf()).param("date",doc.date()).param("sender",doc.sender()).param("main",doc.main()).param("type",doc.type())
+            .param("comment",comment)).andExpect(status().is3xxRedirection());
+        assertThat(catalog.get(doc.id()).comment()).isEqualTo(comment);
+        assertThat(catalog.get(doc.id()).path()).isEqualTo(doc.path());
+        mvc.perform(get(route)).andExpect(status().isOk()).andExpect(content().string(org.hamcrest.Matchers.containsString("name=\"comment\"")))
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("edit-layout")))
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("Kulanzregelung noch offen.")));
+        mvc.perform(get("/").param("q","KULANZREGELUNG")).andExpect(status().isOk())
+            .andExpect(model().attribute("docs",java.util.List.of(catalog.get(doc.id()))));
+        // Fehlender Parameter bleibt abwärtskompatibel; ein explizit leeres Feld löscht die Notiz.
+        mvc.perform(post(route).with(csrf()).param("date",doc.date()).param("sender",doc.sender()).param("main",doc.main()).param("type",doc.type()))
+            .andExpect(status().is3xxRedirection());
+        assertThat(catalog.get(doc.id()).comment()).isEqualTo(comment);
+        mvc.perform(post(route).with(csrf()).param("date",doc.date()).param("sender",doc.sender()).param("main",doc.main()).param("type",doc.type())
+            .param("comment","")).andExpect(status().is3xxRedirection());
+        assertThat(catalog.get(doc.id()).comment()).isEmpty();
+    }
+    @Test void commentIsEscapedInsideTextareaRatherThanRenderedAsHtml() throws Exception {
+        var doc=document("Sicherer Kommentar.pdf");
+        String comment="</textarea><script>alert(123)</script>\nNotiz";
+        mvc.perform(post("/documents/"+doc.id()+"/edit").with(csrf()).param("date",doc.date()).param("sender",doc.sender())
+            .param("main",doc.main()).param("type",doc.type()).param("comment",comment)).andExpect(status().is3xxRedirection());
+        mvc.perform(get("/documents/"+doc.id()+"/edit")).andExpect(status().isOk())
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("&lt;/textarea&gt;&lt;script&gt;")))
+            .andExpect(content().string(org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("<script>alert(123)</script>"))));
+        assertThat(catalog.get(doc.id()).comment()).isEqualTo(comment);
+    }
+    @Test void uploadIncludesOptionalComment() throws Exception {
+        mvc.perform(multipart("/upload").file(new MockMultipartFile("files","Notiz beim Upload.pdf","application/pdf",new byte[]{91,92,93}))
+            .param("sender","Notiztest").param("main","Finanzen").param("type","Info").param("comment","Telefonat\nNachreichung vereinbart.")
+            .with(csrf())).andExpect(status().is3xxRedirection());
+        var docs=catalog.search("Nachreichung","","","",java.util.List.of());
+        assertThat(docs).hasSize(1);assertThat(docs.getFirst().comment()).isEqualTo("Telefonat\nNachreichung vereinbart.");
+    }
 }

@@ -20,7 +20,7 @@ import java.util.*;
 @Service
 public class Catalog {
     public record Doc(String id, String date, String sender, String main, String type,
-                      String filename, String path, List<String> tags, String sha256, Instant createdAt) {
+                      String filename, String path, List<String> tags, String sha256, Instant createdAt, String comment) {
         public String createdAtLabel() {
             return createdAt == null ? "Unbekannt (Bestand)" : CAPTURE_LABEL.format(createdAt);
         }
@@ -34,7 +34,10 @@ public class Catalog {
     private static final DateTimeFormatter CAPTURE_FORMAT = new DateTimeFormatterBuilder().appendInstant(3).toFormatter();
     private static final DateTimeFormatter CAPTURE_LABEL = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm:ss z", Locale.GERMANY).withZone(CAPTURE_ZONE);
 
-    public record Metadata(String date, String sender, String main, String type, List<String> tags) {
+    public record Metadata(String date, String sender, String main, String type, List<String> tags, String comment) {
+        public Metadata(String date, String sender, String main, String type, List<String> tags) {
+            this(date, sender, main, type, tags, null);
+        }
     }
 
     public record Check(List<String> missing, List<String> uncatalogued) {
@@ -72,6 +75,7 @@ public class Catalog {
         db.execute("CREATE TABLE IF NOT EXISTS document_tags(document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE, tag TEXT NOT NULL, PRIMARY KEY(document_id,tag))");
         migrateHashes();
         migrateCreatedAt();
+        migrateComments();
         backfillHashes();
         for (String s : List.of("Finanzen", "Wohnen", "Versicherungen", "Gesundheit")) label("main", s);
         for (String s : List.of("Rechnung", "Info", "Newsletter")) label("type", s);
@@ -99,6 +103,15 @@ public class Catalog {
             db.execute("CREATE INDEX IF NOT EXISTS documents_created_at ON documents(created_at DESC)");
             db.execute("CREATE TRIGGER IF NOT EXISTS documents_created_at_immutable BEFORE UPDATE OF created_at ON documents WHEN NEW.created_at IS NOT OLD.created_at BEGIN SELECT RAISE(ABORT, 'created_at_immutable'); END");
             if (db.queryForObject("PRAGMA user_version", Integer.class) < 2) db.execute("PRAGMA user_version=2");
+        });
+    }
+
+    private void migrateComments() {
+        tx.executeWithoutResult(status -> {
+            boolean present = db.queryForList("PRAGMA table_info(documents)").stream()
+                    .anyMatch(c -> "comment".equals(c.get("name")));
+            if (!present) db.execute("ALTER TABLE documents ADD COLUMN comment TEXT NOT NULL DEFAULT ''");
+            if (db.queryForObject("PRAGMA user_version", Integer.class) < 3) db.execute("PRAGMA user_version=3");
         });
     }
 
@@ -171,16 +184,18 @@ public class Catalog {
     private Metadata validate(Metadata m) {
         // Ein leeres Datum bleibt mit vorhandenen NOT-NULL-Schemata kompatibel.
         String date = m.date() == null || m.date().isBlank() ? "" : LocalDate.parse(m.date().trim()).toString();
+        String comment = m.comment() == null ? "" : m.comment().replace("\r\n", "\n").replace('\r', '\n');
+        if (comment.length() > 10000) throw new IllegalArgumentException("Der Kommentar darf höchstens 10000 Zeichen enthalten.");
         // Validate everything before storing labels.
         component(m.sender());
         component(m.main());
         component(m.type());
         List<String> extras = m.tags() == null ? List.of() : m.tags().stream().filter(s -> !s.isBlank()).map(Catalog::component).toList();
-        return new Metadata(date, label("sender", m.sender()), label("main", m.main()), label("type", m.type()), extras.stream().map(s -> label("extra", s)).distinct().toList());
+        return new Metadata(date, label("sender", m.sender()), label("main", m.main()), label("type", m.type()), extras.stream().map(s -> label("extra", s)).distinct().toList(), comment);
     }
 
     public Doc get(String id) {
-        return db.query("SELECT * FROM documents WHERE id=?", (r, n) -> new Doc(r.getString("id"), r.getString("date"), r.getString("sender"), r.getString("main"), r.getString("type"), r.getString("filename"), r.getString("path"), db.queryForList("SELECT tag FROM document_tags WHERE document_id=? ORDER BY tag", String.class, id), r.getString("sha256"), r.getString("created_at") == null ? null : Instant.parse(r.getString("created_at"))), id)
+        return db.query("SELECT * FROM documents WHERE id=?", (r, n) -> new Doc(r.getString("id"), r.getString("date"), r.getString("sender"), r.getString("main"), r.getString("type"), r.getString("filename"), r.getString("path"), db.queryForList("SELECT tag FROM document_tags WHERE document_id=? ORDER BY tag", String.class, id), r.getString("sha256"), r.getString("created_at") == null ? null : Instant.parse(r.getString("created_at")), r.getString("comment")), id)
                 .stream().findFirst().orElseThrow(() -> new IllegalArgumentException("Dokument nicht gefunden."));
     }
 
@@ -205,7 +220,7 @@ public class Catalog {
         }
         String q = key(query == null ? "" : query);
         return db.queryForList("SELECT id FROM documents ORDER BY created_at DESC,rowid DESC", String.class).stream().map(this::get)
-                .filter(d -> q.isEmpty() || key(d.filename() + " " + d.sender() + " " + d.main() + " " + d.type() + " " + String.join(" ", d.tags()) + " " + d.createdAtLabel() + " " + (d.createdAt() == null ? "" : d.createdAt())).contains(q))
+                .filter(d -> q.isEmpty() || key(d.filename() + " " + d.sender() + " " + d.main() + " " + d.type() + " " + String.join(" ", d.tags()) + " " + d.comment() + " " + d.createdAtLabel() + " " + (d.createdAt() == null ? "" : d.createdAt())).contains(q))
                 .filter(d -> captured == null || (d.createdAt() != null && !d.createdAt().isBefore(captured[0]) && d.createdAt().isBefore(captured[1])))
                 .filter(d -> undated ? d.date().isEmpty() : (selectedPeriod.isEmpty() || d.date().startsWith(selectedPeriod)))
                 .filter(d -> main == null || main.isBlank() || key(d.main()).equals(key(main)))
@@ -305,7 +320,7 @@ public class Catalog {
             Files.move(staged, destination);
             try {
                 tx.executeWithoutResult(status -> {
-                    db.update("INSERT INTO documents(id,date,sender,main,type,filename,path,sha256,created_at) VALUES(?,?,?,?,?,?,?,?,?)", id, m.date(), m.sender(), m.main(), m.type(), finalName, finalRel, hash, CAPTURE_FORMAT.format(Instant.now()));
+                    db.update("INSERT INTO documents(id,date,sender,main,type,filename,path,sha256,created_at,comment) VALUES(?,?,?,?,?,?,?,?,?,?)", id, m.date(), m.sender(), m.main(), m.type(), finalName, finalRel, hash, CAPTURE_FORMAT.format(Instant.now()), m.comment());
                     tags(id, m.tags());
                 });
             } catch (RuntimeException e) {
@@ -328,7 +343,9 @@ public class Catalog {
     public synchronized Doc update(String id, Metadata raw, String filename, boolean confirmed) throws IOException {
         Doc old = get(id);
         String name = component(filename);
-        Metadata m = validate(raw);
+        // Ältere Aufrufer ohne Kommentarparameter behalten vorhandene Notizen.
+        Metadata m = validate(raw.comment() == null
+                ? new Metadata(raw.date(), raw.sender(), raw.main(), raw.type(), raw.tags(), old.comment()) : raw);
         boolean pathChanged = !old.filename().equals(name) || !old.date().equals(m.date())
                 || !old.sender().equals(m.sender()) || !old.main().equals(m.main());
         // Bestehende Pfade im alten Format bleiben bei reinen Tag-/Typänderungen erhalten.
@@ -348,7 +365,7 @@ public class Catalog {
         }
         try {
             tx.executeWithoutResult(status -> {
-                db.update("UPDATE documents SET date=?,sender=?,main=?,type=?,filename=?,path=? WHERE id=?", m.date(), m.sender(), m.main(), m.type(), name, rel, id);
+                db.update("UPDATE documents SET date=?,sender=?,main=?,type=?,filename=?,path=?,comment=? WHERE id=?", m.date(), m.sender(), m.main(), m.type(), name, rel, m.comment(), id);
                 tags(id, m.tags());
             });
         } catch (RuntimeException e) {

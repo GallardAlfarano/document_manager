@@ -3,9 +3,10 @@
 <head th:replace="~{fragments :: head('Bearbeiten')}"></head>
 <body>
 <header th:replace="~{fragments :: nav}"></header>
-<main class="narrow"><h1>Dokument bearbeiten</h1>
+<main class="edit-page"><h1>Dokument bearbeiten</h1>
     <p th:text="${doc.filename}"></p>
     <p class="hint">Erfasst am: <span th:text="${doc.createdAtLabel()}"></span></p>
+    <div class="edit-layout">
     <section class="panel document-preview" aria-label="Originaldokument">
         <h2>Originaldokument</h2>
         <th:block th:if="${originalAvailable}">
@@ -42,6 +43,10 @@
         <label>Zusätzliche Tags<input id="tagInput" name="tags" list="extras"
                                       th:value="${#strings.listJoin(doc.tags,'; ')}"></label>
         <div th:replace="~{fragments :: extras}"></div>
+        <label>Kommentar (optional)
+            <textarea id="comment" name="comment" rows="8" maxlength="10000" th:text="${doc.comment}" aria-describedby="commentHelp"></textarea>
+        </label>
+        <p class="hint" id="commentHelp">Mehrzeilige Notizen zum Dokument, bis zu 10000 Zeichen. Kommentare werden von der normalen Textsuche berücksichtigt.</p>
         <p class="hint">Aktuelle Originaldatei: <code th:text="${doc.path}"></code></p>
         <p>Änderungen an Dateiname, Datum, Absender oder Haupttag verschieben bzw. benennen die Datei um. Vor dem
             Speichern erscheint eine Bestätigung.</p>
@@ -50,6 +55,7 @@
             <a href="/">Abbrechen</a><a class="danger-link" th:href="@{/documents/{id}/delete(id=${doc.id})}">Dokument
             löschen</a></div>
     </form>
+    </div>
     <div th:replace="~{fragments :: suggestions}"></div>
 </main>
 </body>

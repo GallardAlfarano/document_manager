@@ -277,9 +277,10 @@ class CatalogTest {
         assertThat(migrated.get("first").sha256()).isEqualTo(migrated.get("second").sha256()).hasSize(64);
         assertThat(migrated.get("missing").sha256()).isNull();
         assertThat(migrated.get("first").createdAt()).isNull();
+        assertThat(migrated.get("first").comment()).isEmpty();
         assertThat(migrated.get("first").createdAtLabel()).isEqualTo("Unbekannt (Bestand)");
         assertThat(legacy.queryForObject("SELECT count(*) FROM documents",Integer.class)).isEqualTo(3);
-        assertThat(legacy.queryForObject("PRAGMA user_version",Integer.class)).isEqualTo(2);
+        assertThat(legacy.queryForObject("PRAGMA user_version",Integer.class)).isEqualTo(3);
         assertThatThrownBy(()->migrated.upload(upload(),metadata())).isInstanceOf(Catalog.DuplicateDocumentException.class);
         // Erneuter Start ist idempotent und löscht keine bestehenden Dubletten.
         new Catalog(legacy,new DataSourceTransactionManager(ds),data.toString());
@@ -414,5 +415,51 @@ class CatalogTest {
         assertThat(catalog.search("28.10.2026","","","",List.of())).containsExactly(wanted);
         assertThatThrownBy(()->catalog.search("","","","",List.of(),false,"2026-13")).isInstanceOf(java.time.DateTimeException.class);
         assertThat(catalog.page("nicht vorhanden","","","",List.of(),false,"",5).page()).isEqualTo(1);
+    }
+    @Test void multilineCommentsAreStoredAndSurviveRestart() throws Exception {
+        var raw=new Catalog.Metadata("2025-06-10","Sparkasse","Finanzen","Rechnung",List.of("Todo"),"Erste Zeile\r\nZweite Zeile: Rückzahlung offen.\rDritte Zeile");
+        var doc=catalog.upload(upload(),raw);
+        assertThat(doc.comment()).isEqualTo("Erste Zeile\nZweite Zeile: Rückzahlung offen.\nDritte Zeile");
+        setup();assertThat(catalog.get(doc.id()).comment()).isEqualTo(doc.comment());
+        assertThat(catalog.search("RÜCKZAHLUNG","2025","Finanzen","Rechnung",List.of("Todo"))).containsExactly(doc);
+    }
+    @Test void commentChangesNeedNoConfirmationAndPreservePathBytesAndCaptureTime() throws Exception {
+        var doc=catalog.upload(upload(),metadata());
+        var changed=catalog.update(doc.id(),new Catalog.Metadata(doc.date(),doc.sender(),doc.main(),doc.type(),doc.tags(),"Notiz\nZweite Zeile"),false);
+        assertThat(changed.comment()).isEqualTo("Notiz\nZweite Zeile");assertThat(changed.path()).isEqualTo(doc.path());
+        assertThat(changed.createdAt()).isEqualTo(doc.createdAt());assertThat(changed.sha256()).isEqualTo(doc.sha256());
+        assertThat(Files.readAllBytes(catalog.file(doc.path()))).containsExactly(new byte[]{1,2,3,4});
+        // Alte Service-Aufrufer ohne Kommentarargument verlieren keine vorhandene Notiz.
+        assertThat(catalog.update(doc.id(),metadata(),false).comment()).isEqualTo(changed.comment());
+        var cleared=catalog.update(doc.id(),new Catalog.Metadata(doc.date(),doc.sender(),doc.main(),doc.type(),doc.tags(),""),false);
+        assertThat(cleared.comment()).isEmpty();assertThat(catalog.search("Notiz","","","",List.of())).isEmpty();
+    }
+    @Test void duplicateUploadDoesNotOverwriteExistingComment() throws Exception {
+        var doc=catalog.upload(upload(),new Catalog.Metadata("","Sparkasse","Finanzen","Info",List.of(),"Ursprüngliche Notiz"));
+        assertThatThrownBy(()->catalog.upload(upload(),new Catalog.Metadata("","Sparkasse","Finanzen","Info",List.of(),"Andere Notiz")))
+            .isInstanceOf(Catalog.DuplicateDocumentException.class);
+        assertThat(catalog.get(doc.id()).comment()).isEqualTo("Ursprüngliche Notiz");
+    }
+    @Test void commentsAreFilteredBeforePaginationAndCombineWithTags() {
+        var target=capturedFixture("Alte Datei.pdf","2000-01-01T00:00:00.000Z","");
+        db.update("UPDATE documents SET comment=? WHERE id=?","Offene Rückzahlung prüfen",target.id());
+        db.update("INSERT INTO document_tags(document_id,tag) VALUES(?,?)",target.id(),"Todo");
+        for(int i=0;i<35;i++) capturedFixture("Neu "+i+".pdf",java.time.Instant.parse("2026-01-01T00:00:00Z").plusSeconds(i).toString(),"");
+        assertThat(catalog.page("","","","",List.of(),false,"",1).docs()).noneMatch(d->d.id().equals(target.id()));
+        assertThat(catalog.page("RÜCKZAHLUNG","","Finanzen","Info",List.of("Todo"),true,"2000",1).docs())
+            .extracting(Catalog.Doc::id).containsExactly(target.id());
+    }
+    @Test void overlongCommentsAreRejectedWithoutChangingTheDocument() throws Exception {
+        var doc=catalog.upload(upload(),metadata());
+        assertThatThrownBy(()->catalog.update(doc.id(),new Catalog.Metadata(doc.date(),doc.sender(),doc.main(),doc.type(),doc.tags(),"x".repeat(10001)),false))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThat(catalog.get(doc.id()).comment()).isEmpty();assertThat(catalog.file(doc.path())).exists();
+    }
+    @Test void failedCommentUpdateKeepsPreviousComment() throws Exception {
+        var doc=catalog.upload(upload(),new Catalog.Metadata("","Sparkasse","Finanzen","Info",List.of(),"Vorher"));
+        db.execute("CREATE TRIGGER reject_comment BEFORE UPDATE ON documents BEGIN SELECT RAISE(ABORT, 'test'); END");
+        assertThatThrownBy(()->catalog.update(doc.id(),new Catalog.Metadata("","Sparkasse","Finanzen","Info",List.of(),"Nachher"),false))
+            .isInstanceOf(RuntimeException.class);
+        assertThat(catalog.get(doc.id()).comment()).isEqualTo("Vorher");
     }
 }
