@@ -9,13 +9,17 @@
     <p class="notice" th:if="${notice}" th:text="${notice}"></p>
     <form method="post" th:action="@{/tags}" class="panel"><label>Art<select name="kind">
         <option value="main">Haupttag</option>
+        <option value="sub">Unterkategorie</option>
         <option value="type">Dokumententyp</option>
         <option value="extra">Zusätzlicher Tag</option>
         <option value="sender">Absender</option>
-    </select></label><label>Name<input name="name" required maxlength="120"></label>
+    </select></label>
+        <label>Zugehörige Hauptkategorie (nur für Unterkategorien)<select name="main"><option value="">Bitte auswählen</option><option th:each="v:${mains}" th:value="${v}" th:text="${v}"></option></select></label>
+        <label>Name<input name="name" required maxlength="120"></label>
         <button>Anlegen</button>
     </form>
     <section class="panel"><h2>Haupttags</h2><span class="badge" th:each="v:${mains}" th:text="${v}"></span>
+        <h2>Unterkategorien</h2><ul><li th:each="v:${allSubcategories}"><span th:text="${v.main}"></span> / <span th:text="${v.name}"></span></li></ul>
         <h2>Dokumententypen</h2><span class="badge" th:each="v:${types}" th:text="${v}"></span>
         <h2>Zusätzliche Tags</h2><span class="badge" th:each="v:${extras}" th:text="${v}"></span>
         <h2>Absender</h2><span class="badge" th:each="v:${senders}" th:text="${v}"></span></section>

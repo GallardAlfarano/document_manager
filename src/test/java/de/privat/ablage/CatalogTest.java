@@ -278,9 +278,10 @@ class CatalogTest {
         assertThat(migrated.get("missing").sha256()).isNull();
         assertThat(migrated.get("first").createdAt()).isNull();
         assertThat(migrated.get("first").comment()).isEmpty();
+        assertThat(migrated.get("first").subcategory()).isEmpty();
         assertThat(migrated.get("first").createdAtLabel()).isEqualTo("Unbekannt (Bestand)");
         assertThat(legacy.queryForObject("SELECT count(*) FROM documents",Integer.class)).isEqualTo(3);
-        assertThat(legacy.queryForObject("PRAGMA user_version",Integer.class)).isEqualTo(3);
+        assertThat(legacy.queryForObject("PRAGMA user_version",Integer.class)).isEqualTo(4);
         assertThatThrownBy(()->migrated.upload(upload(),metadata())).isInstanceOf(Catalog.DuplicateDocumentException.class);
         // Erneuter Start ist idempotent und löscht keine bestehenden Dubletten.
         new Catalog(legacy,new DataSourceTransactionManager(ds),data.toString());
@@ -548,5 +549,82 @@ class CatalogTest {
         assertThatThrownBy(()->catalog.update(old.id(),metadata(),"Kontoauszug.pdf",true)).isInstanceOf(FileAlreadyExistsException.class);
         assertThat(Files.readString(occupied)).isEqualTo("Fremde Datei");
         assertThat(catalog.get(old.id()).path()).isEqualTo(old.path());assertThat(catalog.file(old.path())).exists();
+    }
+    Metadata withSub(String main,String sub) {
+        return new Catalog.Metadata("2025-06-10","Sparkasse",main,"Rechnung",List.of("Todo"),"Notiz",sub);
+    }
+    @Test void subcategoryAddsAnOptionalDirectoryAndPersistsAcrossRestart() throws Exception {
+        var first=catalog.upload(upload(),withSub("Finanzen","Steuer"));
+        assertThat(first.path()).isEqualTo("Finanzen/Steuer/Sparkasse/2025-06-10_Kontoauszug.pdf");
+        var second=catalog.upload(differentUpload(),new Catalog.Metadata("","Allianz","Häuser","Info",List.of(),"","Haus A"));
+        assertThat(second.path()).isEqualTo("Häuser/Haus A/Allianz/Kontoauszug.pdf");
+        setup();assertThat(catalog.get(first.id()).subcategory()).isEqualTo("Steuer");
+        assertThat(catalog.subcategories()).contains(new Catalog.Subcategory("Finanzen","Steuer"),new Catalog.Subcategory("Häuser","Haus A"));
+        assertThat(catalog.check().missing()).isEmpty();assertThat(catalog.check().uncatalogued()).isEmpty();
+    }
+    @Test void subcategorySpellingIsReusedWithinItsParentButNotAcrossParents() {
+        assertThat(catalog.subcategory("Finanzen","Steuer")).isEqualTo("Steuer");
+        assertThat(catalog.subcategory("finanzen"," STEUER ")).isEqualTo("Steuer");
+        assertThat(catalog.subcategory("Häuser","STEUER")).isEqualTo("STEUER");
+        assertThat(catalog.subcategories()).hasSize(2);
+    }
+    @Test void addingChangingAndClearingSubcategoryRequiresConfirmation() throws Exception {
+        var old=catalog.upload(upload(),metadata());
+        assertThatThrownBy(()->catalog.update(old.id(),withSub("Finanzen","Steuer"),false)).isInstanceOf(IllegalArgumentException.class);
+        var added=catalog.update(old.id(),withSub("Finanzen","Steuer"),true);
+        assertThat(added.path()).contains("/Steuer/");assertThat(catalog.file(old.path())).doesNotExist();
+        var changed=catalog.update(old.id(),withSub("Finanzen","Konten"),true);
+        assertThat(changed.path()).contains("/Konten/");assertThat(catalog.file(added.path())).doesNotExist();
+        assertThatThrownBy(()->catalog.update(old.id(),withSub("Finanzen",""),false)).isInstanceOf(IllegalArgumentException.class);
+        var cleared=catalog.update(old.id(),withSub("Finanzen",""),true);
+        assertThat(cleared.path()).isEqualTo(old.path());assertThat(cleared.subcategory()).isEmpty();
+        assertThat(cleared.sha256()).isEqualTo(old.sha256());assertThat(cleared.createdAt()).isEqualTo(old.createdAt());
+        assertThat(Files.readAllBytes(catalog.file(cleared.path()))).containsExactly(new byte[]{1,2,3,4});
+    }
+    @Test void sameFilenameInDifferentSubcategoriesIsAllowedButIdenticalContentIsNotDuplicated() throws Exception {
+        var first=catalog.upload(upload(),withSub("Finanzen","Steuer"));
+        var second=catalog.upload(differentUpload(),withSub("Finanzen","Konten"));
+        assertThat(first.filename()).isEqualTo(second.filename());assertThat(first.path()).isNotEqualTo(second.path());
+        assertThatThrownBy(()->catalog.upload(upload(),withSub("Häuser","Haus A")))
+            .isInstanceOfSatisfying(Catalog.DuplicateDocumentException.class,e->assertThat(e.existing().id()).isEqualTo(first.id()));
+        assertThat(catalog.get(first.id()).subcategory()).isEqualTo("Steuer");
+    }
+    @Test void subcategoryMovesNeverOverwriteRegisteredOrUnknownFiles() throws Exception {
+        var source=catalog.upload(upload(),withSub("Finanzen","Steuer"));
+        var target=catalog.upload(differentUpload(),withSub("Finanzen","Konten"));
+        assertThatThrownBy(()->catalog.update(source.id(),withSub("Finanzen","Konten"),true)).isInstanceOf(IllegalArgumentException.class);
+        catalog.delete(target.id(),false,true);
+        assertThatThrownBy(()->catalog.update(source.id(),withSub("Finanzen","Konten"),true)).isInstanceOf(FileAlreadyExistsException.class);
+        assertThat(catalog.get(source.id()).path()).isEqualTo(source.path());
+        assertThat(Files.readAllBytes(catalog.file(source.path()))).containsExactly(new byte[]{1,2,3,4});
+        assertThat(Files.readAllBytes(catalog.file(target.path()))).containsExactly(new byte[]{9,8,7});
+    }
+    @Test void subcategoryPathTraversalIsRejected() throws Exception {
+        var doc=catalog.upload(upload(),metadata());
+        for(String invalid:List.of("../Steuer","a/b","a\\b","..","NUL"))
+            assertThatThrownBy(()->catalog.update(doc.id(),withSub("Finanzen",invalid),true)).isInstanceOf(IllegalArgumentException.class);
+        assertThat(catalog.get(doc.id()).path()).isEqualTo(doc.path());assertThat(catalog.file(doc.path())).exists();
+    }
+    @Test void failedSubcategoryUpdateMovesOriginalBackAndKeepsOldMetadata() throws Exception {
+        var doc=catalog.upload(upload(),withSub("Finanzen","Steuer"));
+        db.execute("CREATE TRIGGER reject_subcategory BEFORE UPDATE ON documents BEGIN SELECT RAISE(ABORT, 'test'); END");
+        assertThatThrownBy(()->catalog.update(doc.id(),withSub("Finanzen","Konten"),true)).isInstanceOf(RuntimeException.class);
+        assertThat(catalog.get(doc.id()).subcategory()).isEqualTo("Steuer");assertThat(catalog.file(doc.path())).exists();
+        assertThat(catalog.check().uncatalogued()).isEmpty();assertThat(catalog.check().missing()).isEmpty();
+    }
+    @Test void oldCallersKeepSubcategoryUnlessTheyChangeTheMainCategory() throws Exception {
+        var doc=catalog.upload(upload(),withSub("Finanzen","Steuer"));
+        var comment=new Catalog.Metadata(doc.date(),doc.sender(),doc.main(),doc.type(),doc.tags(),"Nur Kommentar");
+        assertThat(catalog.update(doc.id(),comment,false).subcategory()).isEqualTo("Steuer");
+        var changed=catalog.update(doc.id(),new Catalog.Metadata(doc.date(),doc.sender(),"Häuser",doc.type(),doc.tags()),true);
+        assertThat(changed.subcategory()).isEmpty();assertThat(changed.path()).startsWith("Häuser/Sparkasse/");
+    }
+    @Test void subcategoryFilterAndFreeTextSearchRunBeforePagination() throws Exception {
+        var doc=catalog.upload(upload(),withSub("Finanzen","Steuer"));
+        for(int i=0;i<35;i++) capturedFixture("Später "+i+".pdf",java.time.Instant.parse("2099-01-01T00:00:00Z").plusSeconds(i).toString(),"");
+        assertThat(catalog.page("","","","",List.of(),false,"",1).docs()).noneMatch(d->d.id().equals(doc.id()));
+        assertThat(catalog.page("","2025","Finanzen","Rechnung",List.of("Todo"),false,"","STEUER",1).docs()).containsExactly(doc);
+        assertThat(catalog.search("Steuer","","","",List.of())).containsExactly(doc);
+        assertThat(catalog.page("","","Häuser","",List.of(),false,"","Steuer",1).docs()).isEmpty();
     }
 }

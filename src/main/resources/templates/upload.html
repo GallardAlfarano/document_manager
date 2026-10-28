@@ -13,19 +13,20 @@
         <div class="grid"><label>Datum (optional)<input type="date" name="date"><small>Leer lassen, wenn kein Datum
             bekannt ist.</small></label><label>Absender *<input name="sender" list="senders" maxlength="120" required
                                                                 placeholder="z. B. Sparkasse"></label><label>Haupttag
-            *<input name="main" list="mains" maxlength="120" required
+            *<input id="mainCategory" name="main" list="mains" maxlength="120" required
                     placeholder="Auswählen oder neu anlegen"></label><label>Dokumententyp *<input name="type"
                                                                                                   list="types"
                                                                                                   maxlength="120"
                                                                                                   required
                                                                                                   placeholder="z. B. Rechnung"></label>
         </div>
+        <label>Unterkategorie (optional)<input id="subcategory" name="subcategory" list="subcategoryList" maxlength="120" placeholder="Auswählen oder neu anlegen"></label>
         <label>Zusätzliche Tags<input id="tagInput" name="tags" list="extras"
                                       placeholder="Relevant für Steuererklärung; Todo"></label>
         <div th:replace="~{fragments :: extras}"></div>
         <label>Kommentar (optional)<textarea name="comment" rows="5" maxlength="10000" placeholder="Mehrzeilige Notizen zum Dokument"></textarea></label>
         <p class="hint">Bis zu 10000 Zeichen. Bei mehreren Dateien gilt der Kommentar für alle ausgewählten Dokumente.</p>
-        <p class="hint">Ablage: Haupttag / Absender / Datum_Originaldateiname. Ohne Datum wird kein Datumsprefix
+        <p class="hint">Ablage: Haupttag / optionale Unterkategorie / Absender / Datum_Originaldateiname. Ohne Datum wird kein Datumsprefix
             ergänzt. Vorhandene Datums-Prefixe werden bei gesetztem Dokumentdatum bereinigt; reine Datumsnamen bleiben erhalten. Die ausgewählte Quelldatei bleibt erhalten.</p>
         <div class="actions">
             <button>Dokumente speichern</button>

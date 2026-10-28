@@ -323,4 +323,43 @@ class WebTest {
         assertThat(catalog.get(doc.id()).path()).isEqualTo(doc.path());
         assertThat(catalog.get(doc.id()).createdAt()).isEqualTo(doc.createdAt());
     }
+    @Test void uploadAndEditSupportOptionalSubcategoryWithConfirmation() throws Exception {
+        mvc.perform(multipart("/upload").file(new MockMultipartFile("files","Unterkategorie HTTP.pdf","application/pdf",new byte[]{111,112,113}))
+            .param("date","2026-04-27").param("sender","Sub Test").param("main","Finanzen").param("type","Info").param("subcategory","Steuer")
+            .with(csrf())).andExpect(status().is3xxRedirection());
+        var doc=catalog.search("Unterkategorie HTTP","","","",java.util.List.of()).getFirst();
+        assertThat(doc.path()).isEqualTo("Finanzen/Steuer/Sub Test/2026-04-27_Unterkategorie HTTP.pdf");
+        mvc.perform(get("/documents/"+doc.id()+"/edit")).andExpect(status().isOk())
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("name=\"subcategory\"")))
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("data-subcategory=\"Steuer\"")));
+        String route="/documents/"+doc.id()+"/edit";
+        mvc.perform(post(route).with(csrf()).param("date",doc.date()).param("sender",doc.sender()).param("main",doc.main()).param("type",doc.type())
+            .param("subcategory","")).andExpect(status().isBadRequest());
+        mvc.perform(post(route).with(csrf()).param("date",doc.date()).param("sender",doc.sender()).param("main",doc.main()).param("type",doc.type())
+            .param("subcategory","").param("confirmed","true")).andExpect(status().is3xxRedirection());
+        assertThat(catalog.get(doc.id()).path()).isEqualTo("Finanzen/Sub Test/2026-04-27_Unterkategorie HTTP.pdf");
+    }
+    @Test void subcategoriesCanBeManagedWithAParentAndAreAvailableAsSuggestions() throws Exception {
+        mvc.perform(post("/tags").with(csrf()).param("kind","sub").param("name","Haus A").param("main","Häuser"))
+            .andExpect(status().is3xxRedirection());
+        mvc.perform(post("/tags").with(csrf()).param("kind","sub").param("name","Ohne Elternkategorie"))
+            .andExpect(status().isBadRequest());
+        mvc.perform(get("/tags")).andExpect(status().isOk()).andExpect(content().string(org.hamcrest.Matchers.containsString("Haus A")));
+        mvc.perform(get("/upload")).andExpect(status().isOk()).andExpect(content().string(org.hamcrest.Matchers.containsString("id=\"subcategoryChoices\"")))
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("data-main=\"Häuser\"")));
+    }
+    @Test void subcategoryFilterIsDisplayedAndPreservedInPaginationLinks() throws Exception {
+        String scope="HTTP Filter Unterkategorie";
+        for(int i=0;i<31;i++) {
+            var doc=webCaptured("Sub Paging "+i+".pdf",java.time.Instant.parse("2097-01-01T00:00:00Z").plusSeconds(i).toString());
+            captureDb.update("UPDATE documents SET subcategory=? WHERE id=?",scope,doc.id());
+        }
+        mvc.perform(get("/").param("subcategory",scope).param("main","Finanzen"))
+            .andExpect(status().isOk()).andExpect(model().attribute("docs",org.hamcrest.Matchers.hasSize(30)))
+            .andExpect(model().attribute("subcategory",scope))
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("subcategory=")))
+            .andExpect(content().string(org.hamcrest.Matchers.containsString("page=2")));
+        mvc.perform(get("/").param("subcategory",scope).param("main","Finanzen").param("page","2"))
+            .andExpect(status().isOk()).andExpect(model().attribute("docs",org.hamcrest.Matchers.hasSize(1)));
+    }
 }

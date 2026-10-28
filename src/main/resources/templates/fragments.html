@@ -22,6 +22,12 @@
     <datalist id="senders">
         <option th:each="v:${senders}" th:value="${v}"></option>
     </datalist>
+    <datalist id="subcategoryList">
+        <option th:each="v:${allSubcategories}" th:value="${v.name}" th:attr="data-main=${v.main}"></option>
+    </datalist>
+    <template id="subcategoryChoices">
+        <option th:each="v:${allSubcategories}" th:value="${v.name}" th:attr="data-main=${v.main}"></option>
+    </template>
     <datalist id="extras">
         <option th:each="v:${extras}" th:value="${v}"></option>
     </datalist>

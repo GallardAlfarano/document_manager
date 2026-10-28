@@ -7,7 +7,7 @@ document.querySelectorAll('[data-tag]').forEach(button => button.addEventListene
 }));
 const form = document.getElementById('editForm');
 if (form) form.addEventListener('submit', event => {
-    const changed = ['date', 'sender', 'main', 'filename'].some(k => form.elements[k].value.trim() !== form.dataset[k]);
+    const changed = ['date', 'sender', 'main', 'filename', 'subcategory'].some(k => form.elements[k].value.trim() !== form.dataset[k]);
     if (changed && !window.confirm('Achtung, du veränderst etwas, was sich aufs Dateisystem auswirkt. Die Originaldatei wird verschoben bzw. umbenannt. Okay?')) {
         event.preventDefault();
         return;
@@ -38,4 +38,30 @@ if (undated && period) {
     };
     undated.addEventListener('change', togglePeriod);
     togglePeriod();
+}
+
+const mainCategory=document.getElementById('mainCategory'), subcategory=document.getElementById('subcategory');
+const subcategoryList=document.getElementById('subcategoryList'), subcategoryChoices=document.getElementById('subcategoryChoices');
+if(mainCategory && subcategory && subcategoryList && subcategoryChoices) {
+    const categoryKey=value=>value.trim().normalize('NFC').toLowerCase();
+    let previousMain=categoryKey(mainCategory.value);
+    const refreshSubcategories=()=>{
+        const scope=categoryKey(mainCategory.value), seen=new Set();
+        subcategoryList.replaceChildren();
+        for(const option of subcategoryChoices.content.querySelectorAll('option')) {
+            const valueKey=categoryKey(option.value);
+            if((!scope || categoryKey(option.dataset.main)===scope) && !seen.has(valueKey)) {
+                subcategoryList.append(option.cloneNode(true));
+                seen.add(valueKey);
+            }
+        }
+    };
+    mainCategory.addEventListener('input',refreshSubcategories);
+    mainCategory.addEventListener('change',()=>{
+        const current=categoryKey(mainCategory.value);
+        if(current!==previousMain) subcategory.value='';
+        previousMain=current;
+        refreshSubcategories();
+    });
+    refreshSubcategories();
 }

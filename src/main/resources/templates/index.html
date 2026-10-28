@@ -21,15 +21,16 @@
     </div>
     <form method="get" action="/" class="panel">
         <div class="grid"><label>Suche<input name="q" th:value="${q}"
-                                             placeholder="Dateiname, Absender, Tag, Kommentar oder Erfassungszeitpunkt"></label><label>Jahr, Monat oder
+                                             placeholder="Dateiname, Absender, Kategorie, Tag, Kommentar oder Erfassungszeitpunkt"></label><label>Jahr, Monat oder
             Datum<input id="period" name="period" th:value="${period}" th:disabled="${undated}"
-                        placeholder="2025 oder 2025-06"></label><label>Haupttag<select name="main">
+                        placeholder="2025 oder 2025-06"></label><label>Haupttag<select id="mainCategory" name="main">
             <option value="">Alle Haupttags</option>
             <option th:each="v:${mains}" th:value="${v}" th:text="${v}" th:selected="${v==main}"></option>
         </select></label><label>Dokumententyp<select name="type">
             <option value="">Alle Typen</option>
             <option th:each="v:${types}" th:value="${v}" th:text="${v}" th:selected="${v==type}"></option>
         </select></label>
+            <label>Unterkategorie<input id="subcategory" name="subcategory" list="subcategoryList" th:value="${subcategory}" placeholder="Alle oder Namen eingeben" maxlength="120"></label>
             <label>Erfasst am (Jahr, Monat oder Tag)<input name="createdPeriod" th:value="${createdPeriod}" placeholder="2026 oder 2026-10 oder 2026-10-28"></label>
         </div>
         <label class="choice"><input id="undated" type="checkbox" name="undated" value="true"
@@ -62,7 +63,7 @@
                 <td><a th:href="@{/documents/{id}/edit(id=${d.id})}"><strong th:text="${d.filename}"></strong></a><small th:text="${d.sender}"></small></td>
                 <td th:text="${#strings.isEmpty(d.date) ? 'Ohne Datum' : d.date}"></td>
                 <td th:text="${d.createdAtLabel()}"></td>
-                <td><span class="badge" th:text="${d.main}"></span><small th:text="${d.type}"></small></td>
+                <td><span class="badge" th:text="${d.main}"></span><small th:unless="${#strings.isEmpty(d.subcategory)}" th:text="${d.subcategory}"></small><small th:text="${d.type}"></small></td>
                 <td><span class="badge" th:each="t:${d.tags}" th:text="${t}"></span></td>
                 <td><a th:href="@{/documents/{id}/file(id=${d.id})}">Original</a> · <a
                         th:href="@{/documents/{id}/edit(id=${d.id})}">Bearbeiten</a> · <a class="danger-link"
@@ -73,9 +74,9 @@
         </table>
     </div>
     <nav class="pagination" aria-label="Dokumentseiten" th:if="${result.pageCount > 1}">
-        <a th:if="${result.page > 1}" th:href="@{/(q=${q},period=${period},main=${main},type=${type},tags=${tagQuery},undated=${undated},createdPeriod=${createdPeriod},page=${result.page - 1})}">← Neuere Einträge</a>
+        <a th:if="${result.page > 1}" th:href="@{/(q=${q},period=${period},main=${main},type=${type},tags=${tagQuery},undated=${undated},createdPeriod=${createdPeriod},subcategory=${subcategory},page=${result.page - 1})}">← Neuere Einträge</a>
         <span th:text="|Seite ${result.page} von ${result.pageCount}|"></span>
-        <a th:if="${result.page < result.pageCount}" th:href="@{/(q=${q},period=${period},main=${main},type=${type},tags=${tagQuery},undated=${undated},createdPeriod=${createdPeriod},page=${result.page + 1})}">Ältere Einträge →</a>
+        <a th:if="${result.page < result.pageCount}" th:href="@{/(q=${q},period=${period},main=${main},type=${type},tags=${tagQuery},undated=${undated},createdPeriod=${createdPeriod},subcategory=${subcategory},page=${result.page + 1})}">Ältere Einträge →</a>
     </nav>
     <div th:replace="~{fragments :: suggestions}"></div>
 </main>

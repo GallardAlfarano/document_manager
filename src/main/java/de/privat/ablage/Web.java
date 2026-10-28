@@ -29,6 +29,7 @@ public class Web {
         model.addAttribute("types", catalog.labels("type"));
         model.addAttribute("extras", catalog.labels("extra"));
         model.addAttribute("senders", catalog.labels("sender"));
+        model.addAttribute("allSubcategories", catalog.subcategories());
     }
 
     static List<String> tags(String value) {
@@ -38,11 +39,12 @@ public class Web {
     @GetMapping("/")
     String index(@RequestParam(defaultValue = "") String q, @RequestParam(defaultValue = "") String period,
                  @RequestParam(defaultValue = "") String main, @RequestParam(defaultValue = "") String type, @RequestParam(defaultValue = "") String tags, @RequestParam(defaultValue = "false") boolean undated,
-                 @RequestParam(defaultValue = "") String createdPeriod, @RequestParam(defaultValue = "1") int page, Model model) {
-        var result = catalog.page(q, period, main, type, tags(tags), undated, createdPeriod, page);
+                 @RequestParam(defaultValue = "") String createdPeriod, @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "") String subcategory, Model model) {
+        var result = catalog.page(q, period, main, type, tags(tags), undated, createdPeriod, subcategory, page);
         model.addAttribute("docs", result.docs());
         model.addAttribute("result", result);
         model.addAttribute("createdPeriod", createdPeriod);
+        model.addAttribute("subcategory", subcategory);
         model.addAttribute("undated", undated);
         model.addAttribute("q", q);
         model.addAttribute("period", period);
@@ -60,8 +62,8 @@ public class Web {
     @PostMapping("/upload")
     String upload(@RequestParam MultipartFile[] files, @RequestParam(defaultValue = "") String date, @RequestParam String sender,
                   @RequestParam String main, @RequestParam String type, @RequestParam(defaultValue = "") String tags,
-                  @RequestParam(defaultValue = "") String comment, RedirectAttributes flash) {
-        var metadata = new Catalog.Metadata(date, sender, main, type, tags(tags), comment);
+                  @RequestParam(defaultValue = "") String comment, @RequestParam(defaultValue = "") String subcategory, RedirectAttributes flash) {
+        var metadata = new Catalog.Metadata(date, sender, main, type, tags(tags), comment, subcategory);
         int count = 0;
         List<String> errors = new ArrayList<>();
         List<DuplicateNotice> duplicates = new ArrayList<>();
@@ -106,9 +108,9 @@ public class Web {
     @PostMapping("/documents/{id}/edit")
     String edit(@PathVariable String id, @RequestParam(defaultValue = "") String date, @RequestParam String sender, @RequestParam String main,
                 @RequestParam String type, @RequestParam(required = false) String filename, @RequestParam(defaultValue = "") String tags, @RequestParam(defaultValue = "false") boolean confirmed,
-                @RequestParam(required = false) String comment, RedirectAttributes flash) throws Exception {
+                @RequestParam(required = false) String comment, @RequestParam(required = false) String subcategory, RedirectAttributes flash) throws Exception {
         String name = filename == null ? catalog.get(id).filename() : filename;
-        catalog.update(id, new Catalog.Metadata(date, sender, main, type, tags(tags), comment), name, confirmed);
+        catalog.update(id, new Catalog.Metadata(date, sender, main, type, tags(tags), comment, subcategory), name, confirmed);
         flash.addFlashAttribute("notice", "Änderungen gespeichert.");
         return "redirect:/";
     }
@@ -196,8 +198,9 @@ public class Web {
     }
 
     @PostMapping("/tags")
-    String labels(@RequestParam String kind, @RequestParam String name, RedirectAttributes flash) {
-        catalog.label(kind, name);
+    String labels(@RequestParam String kind, @RequestParam String name, @RequestParam(defaultValue = "") String main, RedirectAttributes flash) {
+        if (kind.equals("sub")) catalog.subcategory(main, name);
+        else catalog.label(kind, name);
         flash.addFlashAttribute("notice", "Eintrag angelegt bzw. vorhandene Schreibweise wiederverwendet.");
         return "redirect:/tags";
     }

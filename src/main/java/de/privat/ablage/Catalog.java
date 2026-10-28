@@ -20,7 +20,7 @@ import java.util.*;
 @Service
 public class Catalog {
     public record Doc(String id, String date, String sender, String main, String type,
-                      String filename, String path, List<String> tags, String sha256, Instant createdAt, String comment) {
+                      String filename, String path, List<String> tags, String sha256, Instant createdAt, String comment, String subcategory) {
         public String createdAtLabel() {
             return createdAt == null ? "Unbekannt (Bestand)" : CAPTURE_LABEL.format(createdAt);
         }
@@ -34,10 +34,16 @@ public class Catalog {
     private static final DateTimeFormatter CAPTURE_FORMAT = new DateTimeFormatterBuilder().appendInstant(3).toFormatter();
     private static final DateTimeFormatter CAPTURE_LABEL = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm:ss z", Locale.GERMANY).withZone(CAPTURE_ZONE);
 
-    public record Metadata(String date, String sender, String main, String type, List<String> tags, String comment) {
+    public record Metadata(String date, String sender, String main, String type, List<String> tags, String comment, String subcategory) {
         public Metadata(String date, String sender, String main, String type, List<String> tags) {
-            this(date, sender, main, type, tags, null);
+            this(date, sender, main, type, tags, null, null);
         }
+        public Metadata(String date, String sender, String main, String type, List<String> tags, String comment) {
+            this(date, sender, main, type, tags, comment, null);
+        }
+    }
+
+    public record Subcategory(String main, String name) {
     }
 
     public record Check(List<String> missing, List<String> uncatalogued) {
@@ -76,6 +82,7 @@ public class Catalog {
         migrateHashes();
         migrateCreatedAt();
         migrateComments();
+        migrateSubcategories();
         backfillHashes();
         for (String s : List.of("Finanzen", "Wohnen", "Versicherungen", "Gesundheit")) label("main", s);
         for (String s : List.of("Rechnung", "Info", "Newsletter")) label("type", s);
@@ -113,6 +120,27 @@ public class Catalog {
             if (!present) db.execute("ALTER TABLE documents ADD COLUMN comment TEXT NOT NULL DEFAULT ''");
             if (db.queryForObject("PRAGMA user_version", Integer.class) < 3) db.execute("PRAGMA user_version=3");
         });
+    }
+
+    private void migrateSubcategories() {
+        tx.executeWithoutResult(status -> {
+            boolean present = db.queryForList("PRAGMA table_info(documents)").stream()
+                    .anyMatch(c -> "subcategory".equals(c.get("name")));
+            if (!present) db.execute("ALTER TABLE documents ADD COLUMN subcategory TEXT NOT NULL DEFAULT ''");
+            db.execute("CREATE TABLE IF NOT EXISTS subcategories(main_key TEXT NOT NULL, main TEXT NOT NULL, name TEXT NOT NULL, key TEXT NOT NULL, PRIMARY KEY(main_key,key))");
+            if (db.queryForObject("PRAGMA user_version", Integer.class) < 4) db.execute("PRAGMA user_version=4");
+        });
+    }
+
+    public synchronized String subcategory(String main, String name) {
+        String child = component(name);
+        String parent = label("main", main);
+        db.update("INSERT OR IGNORE INTO subcategories(main_key,main,name,key) VALUES(?,?,?,?)", key(parent), parent, child, key(child));
+        return db.queryForObject("SELECT name FROM subcategories WHERE main_key=? AND key=?", String.class, key(parent), key(child));
+    }
+
+    public List<Subcategory> subcategories() {
+        return db.query("SELECT main,name FROM subcategories ORDER BY main,name", (r,n) -> new Subcategory(r.getString("main"),r.getString("name")));
     }
 
     private void backfillHashes() {
@@ -190,12 +218,16 @@ public class Catalog {
         component(m.sender());
         component(m.main());
         component(m.type());
+        String child = m.subcategory() == null || m.subcategory().isBlank() ? "" : component(m.subcategory());
         List<String> extras = m.tags() == null ? List.of() : m.tags().stream().filter(s -> !s.isBlank()).map(Catalog::component).toList();
-        return new Metadata(date, label("sender", m.sender()), label("main", m.main()), label("type", m.type()), extras.stream().map(s -> label("extra", s)).distinct().toList(), comment);
+        String main = label("main", m.main());
+        return new Metadata(date, label("sender", m.sender()), main, label("type", m.type()),
+                extras.stream().map(s -> label("extra", s)).distinct().toList(), comment,
+                child.isEmpty() ? "" : subcategory(main, child));
     }
 
     public Doc get(String id) {
-        return db.query("SELECT * FROM documents WHERE id=?", (r, n) -> new Doc(r.getString("id"), r.getString("date"), r.getString("sender"), r.getString("main"), r.getString("type"), r.getString("filename"), r.getString("path"), db.queryForList("SELECT tag FROM document_tags WHERE document_id=? ORDER BY tag", String.class, id), r.getString("sha256"), r.getString("created_at") == null ? null : Instant.parse(r.getString("created_at")), r.getString("comment")), id)
+        return db.query("SELECT * FROM documents WHERE id=?", (r, n) -> new Doc(r.getString("id"), r.getString("date"), r.getString("sender"), r.getString("main"), r.getString("type"), r.getString("filename"), r.getString("path"), db.queryForList("SELECT tag FROM document_tags WHERE document_id=? ORDER BY tag", String.class, id), r.getString("sha256"), r.getString("created_at") == null ? null : Instant.parse(r.getString("created_at")), r.getString("comment"), r.getString("subcategory")), id)
                 .stream().findFirst().orElseThrow(() -> new IllegalArgumentException("Dokument nicht gefunden."));
     }
 
@@ -208,6 +240,10 @@ public class Catalog {
     }
 
     public List<Doc> search(String query, String period, String main, String type, List<String> tags, boolean undated, String createdPeriod) {
+        return search(query, period, main, type, tags, undated, createdPeriod, "");
+    }
+
+    public List<Doc> search(String query, String period, String main, String type, List<String> tags, boolean undated, String createdPeriod, String subcategory) {
         Instant[] captured = captureBounds(createdPeriod);
         String selectedPeriod = period == null ? "" : period.trim();
         // "Ohne Datum" und ein Zeitraum sind alternativ, auch ohne JavaScript.
@@ -220,20 +256,27 @@ public class Catalog {
         }
         String q = key(query == null ? "" : query);
         return db.queryForList("SELECT id FROM documents ORDER BY created_at DESC,rowid DESC", String.class).stream().map(this::get)
-                .filter(d -> q.isEmpty() || key(d.filename() + " " + d.sender() + " " + d.main() + " " + d.type() + " " + String.join(" ", d.tags()) + " " + d.comment() + " " + d.createdAtLabel() + " " + (d.createdAt() == null ? "" : d.createdAt())).contains(q))
+                .filter(d -> q.isEmpty() || key(d.filename() + " " + d.sender() + " " + d.main() + " " + d.subcategory() + " " + d.type() + " " + String.join(" ", d.tags()) + " " + d.comment() + " " + d.createdAtLabel() + " " + (d.createdAt() == null ? "" : d.createdAt())).contains(q))
                 .filter(d -> captured == null || (d.createdAt() != null && !d.createdAt().isBefore(captured[0]) && d.createdAt().isBefore(captured[1])))
                 .filter(d -> undated ? d.date().isEmpty() : (selectedPeriod.isEmpty() || d.date().startsWith(selectedPeriod)))
                 .filter(d -> main == null || main.isBlank() || key(d.main()).equals(key(main)))
+                .filter(d -> subcategory == null || subcategory.isBlank() || key(d.subcategory()).equals(key(subcategory)))
                 .filter(d -> type == null || type.isBlank() || key(d.type()).equals(key(type)))
                 .filter(d -> tags == null || tags.stream().allMatch(t -> d.tags().stream().anyMatch(s -> key(s).equals(key(t))))).toList();
     }
 
     public SearchPage page(String query, String period, String main, String type, List<String> tags,
                            boolean undated, String createdPeriod, int requestedPage) {
+        return page(query, period, main, type, tags, undated, createdPeriod, "", requestedPage);
+    }
+
+    public SearchPage page(String query, String period, String main, String type, List<String> tags,
+                           boolean undated, String createdPeriod, String subcategory, int requestedPage) {
         // Die normale Startseite lädt nur die benötigten 30 Datensätze.
         if ((query == null || query.isBlank()) && (period == null || period.isBlank())
                 && (main == null || main.isBlank()) && (type == null || type.isBlank())
-                && (tags == null || tags.isEmpty()) && !undated && (createdPeriod == null || createdPeriod.isBlank())) {
+                && (tags == null || tags.isEmpty()) && !undated && (createdPeriod == null || createdPeriod.isBlank())
+                && (subcategory == null || subcategory.isBlank())) {
             int total = db.queryForObject("SELECT count(*) FROM documents", Integer.class);
             int pages = Math.max(1, (total + PAGE_SIZE - 1) / PAGE_SIZE);
             int page = Math.max(1, Math.min(requestedPage, pages));
@@ -241,7 +284,7 @@ public class Catalog {
                     String.class, PAGE_SIZE, (page - 1) * PAGE_SIZE).stream().map(this::get).toList();
             return new SearchPage(docs, total, page, pages);
         }
-        List<Doc> matches = search(query, period, main, type, tags, undated, createdPeriod);
+        List<Doc> matches = search(query, period, main, type, tags, undated, createdPeriod, subcategory);
         int pages = Math.max(1, (matches.size() + PAGE_SIZE - 1) / PAGE_SIZE);
         int page = Math.max(1, Math.min(requestedPage, pages));
         int start = (page - 1) * PAGE_SIZE;
@@ -290,7 +333,7 @@ public class Catalog {
     }
 
     private String relative(Metadata m, String filename) {
-        return m.main() + "/" + m.sender() + "/" + (m.date().isEmpty() ? "" : m.date() + "_") + filename;
+        return m.main() + "/" + (m.subcategory().isEmpty() ? "" : m.subcategory() + "/") + m.sender() + "/" + (m.date().isEmpty() ? "" : m.date() + "_") + filename;
     }
 
     public Path file(String relative) throws IOException {
@@ -342,7 +385,7 @@ public class Catalog {
             Files.move(staged, destination);
             try {
                 tx.executeWithoutResult(status -> {
-                    db.update("INSERT INTO documents(id,date,sender,main,type,filename,path,sha256,created_at,comment) VALUES(?,?,?,?,?,?,?,?,?,?)", id, m.date(), m.sender(), m.main(), m.type(), finalName, finalRel, hash, CAPTURE_FORMAT.format(Instant.now()), m.comment());
+                    db.update("INSERT INTO documents(id,date,sender,main,type,filename,path,sha256,created_at,comment,subcategory) VALUES(?,?,?,?,?,?,?,?,?,?,?)", id, m.date(), m.sender(), m.main(), m.type(), finalName, finalRel, hash, CAPTURE_FORMAT.format(Instant.now()), m.comment(), m.subcategory());
                     tags(id, m.tags());
                 });
             } catch (RuntimeException e) {
@@ -366,14 +409,16 @@ public class Catalog {
         Doc old = get(id);
         String inputName = component(filename);
         // Ältere Aufrufer ohne Kommentarparameter behalten vorhandene Notizen.
-        Metadata m = validate(raw.comment() == null
-                ? new Metadata(raw.date(), raw.sender(), raw.main(), raw.type(), raw.tags(), old.comment()) : raw);
+        String child = raw.subcategory() == null
+                ? (raw.main() != null && key(raw.main()).equals(key(old.main())) ? old.subcategory() : "") : raw.subcategory();
+        Metadata m = validate(new Metadata(raw.date(), raw.sender(), raw.main(), raw.type(), raw.tags(),
+                raw.comment() == null ? old.comment() : raw.comment(), child));
         boolean pathRequested = !old.filename().equals(inputName) || !old.date().equals(m.date())
-                || !old.sender().equals(m.sender()) || !old.main().equals(m.main());
+                || !old.sender().equals(m.sender()) || !old.main().equals(m.main()) || !old.subcategory().equals(m.subcategory());
         // Reine Kommentar-/Tagänderungen bereinigen alte Dateinamen nicht nebenbei.
         String name = pathRequested ? component(baseFilename(inputName, m.date())) : inputName;
         boolean pathChanged = !old.filename().equals(name) || !old.date().equals(m.date())
-                || !old.sender().equals(m.sender()) || !old.main().equals(m.main());
+                || !old.sender().equals(m.sender()) || !old.main().equals(m.main()) || !old.subcategory().equals(m.subcategory());
         // Bestehende Pfade im alten Format bleiben bei reinen Tag-/Typänderungen erhalten.
         String rel = pathChanged ? relative(m, name) : old.path();
         boolean moving = !old.path().equals(rel);
@@ -391,7 +436,7 @@ public class Catalog {
         }
         try {
             tx.executeWithoutResult(status -> {
-                db.update("UPDATE documents SET date=?,sender=?,main=?,type=?,filename=?,path=?,comment=? WHERE id=?", m.date(), m.sender(), m.main(), m.type(), name, rel, m.comment(), id);
+                db.update("UPDATE documents SET date=?,sender=?,main=?,type=?,filename=?,path=?,comment=?,subcategory=? WHERE id=?", m.date(), m.sender(), m.main(), m.type(), name, rel, m.comment(), m.subcategory(), id);
                 tags(id, m.tags());
             });
         } catch (RuntimeException e) {

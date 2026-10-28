@@ -44,6 +44,10 @@ Alternativ Umgebungsvariable `ABLAGE_DATA` setzen. Unter Windows beispielsweise 
 
 ## Bedienung
 
+**Optionale Unterkategorien:** Jede Unterkategorie gehört zu einer Hauptkategorie, z. B. `Finanzen / Steuer` oder `Häuser / Haus A`. Beim Hinzufügen und Bearbeiten werden passende vorhandene Namen vorgeschlagen; neue können direkt eingetragen oder unter „Tags verwalten“ mit zugehöriger Hauptkategorie angelegt werden. Groß-/Kleinschreibung und äußere Leerzeichen erzeugen innerhalb derselben Hauptkategorie keine Duplikate. Gleichnamige Unterkategorien unterschiedlicher Hauptkategorien sind unabhängig.
+
+Mit Unterkategorie lautet der Pfad `Hauptkategorie/Unterkategorie/Absender/Datei`, ohne Unterkategorie `Hauptkategorie/Absender/Datei`. Das Ergänzen, Ändern oder Leeren der Unterkategorie verschiebt das Original nach Bestätigung; Kollisionen überschreiben keine Dateien. Die Textsuche berücksichtigt Unterkategorien. Der zusätzliche Unterkategorie-Filter lässt sich mit allen bestehenden Filtern kombinieren und bleibt beim Blättern erhalten. Ohne Hauptkategorie-Filter sucht er den Namen über alle Hauptkategorien. Beim Wechsel der Hauptkategorie wird das Unterkategorie-Feld in der Oberfläche geleert, damit kein bisheriger Wert versehentlich übernommen wird.
+
 Die Startseite zeigt höchstens 30 Dokumente pro Seite, standardmäßig nach Erfassungszeitpunkt absteigend (neueste zuerst). „Ältere Einträge“ und „Neuere Einträge“ blättern durch alle Treffer und behalten die gesetzten Filter bei. Eine neue Suche beginnt wieder auf Seite 1.
 
 Der unveränderliche Erfassungszeitpunkt wird automatisch beim Anlegen des Katalogeintrags gesetzt und in der Liste sowie auf der Dokumentseite angezeigt. Er beeinflusst weder Dokumentdatum noch Dateipfad. Speicherung als UTC-Zeitpunkt, Anzeige und Kalenderfilter in `Europe/Berlin` mit Sommer-/Winterzeit. Über „Erfasst am“ kann nach Jahr, Monat oder Tag gefiltert werden, unabhängig vom Dokumentdatum; auch die Textsuche berücksichtigt den angezeigten Erfassungszeitpunkt. Bearbeiten, Umbenennen und ein erneuter Upload desselben Inhalts verändern ihn nicht.
@@ -80,6 +84,8 @@ Nur eine laufende Anwendungsinstanz pro Datenordner verwenden. Der Server bindet
 Die Datenbanktabellen werden beim ersten Start angelegt. Die Hash-Migration ergänzt die Spalte `documents.sha256`, einen Suchindex und einen Trigger gegen neue Hash-Dubletten; sie ist wiederholbar und setzt SQLite `user_version` auf mindestens 1.
 
 ## Bestehende Ablagen aktualisieren
+
+Die Unterkategorie-Migration ergänzt automatisch `documents.subcategory` mit leerem Standardwert und die Tabelle `subcategories` (Schema-Version mindestens 4). Bestehende Dokumente behalten ihre bisherige Ablage ohne zusätzlichen Unterordner. Erst eine ausdrücklich gespeicherte Pfadänderung verschiebt Originaldateien.
 
 Die Kommentar-Migration ergänzt automatisch `comment TEXT NOT NULL DEFAULT ''` (Schema-Version mindestens 3). Bestehende Dokumente starten mit leerem Kommentar; Originaldateien und vorhandene Metadaten bleiben erhalten.
 
