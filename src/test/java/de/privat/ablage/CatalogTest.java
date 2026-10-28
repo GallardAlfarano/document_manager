@@ -550,7 +550,7 @@ class CatalogTest {
         assertThat(Files.readString(occupied)).isEqualTo("Fremde Datei");
         assertThat(catalog.get(old.id()).path()).isEqualTo(old.path());assertThat(catalog.file(old.path())).exists();
     }
-    Metadata withSub(String main,String sub) {
+    Catalog.Metadata withSub(String main,String sub) {
         return new Catalog.Metadata("2025-06-10","Sparkasse",main,"Rechnung",List.of("Todo"),"Notiz",sub);
     }
     @Test void subcategoryAddsAnOptionalDirectoryAndPersistsAcrossRestart() throws Exception {
