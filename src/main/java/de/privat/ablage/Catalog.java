@@ -256,7 +256,7 @@ public class Catalog {
             else java.time.Year.parse(selectedPeriod);
         }
         String q = key(query == null ? "" : query);
-        return db.queryForList("SELECT id FROM documents ORDER BY created_at DESC,rowid DESC", String.class).stream().map(this::get)
+        return db.queryForList("SELECT id FROM documents ORDER BY julianday(created_at) DESC,rowid DESC", String.class).stream().map(this::get)
                 .filter(d -> q.isEmpty() || key(d.filename() + " " + d.sender() + " " + d.main() + " " + d.subcategory() + " " + d.type() + " " + String.join(" ", d.tags()) + " " + d.comment() + " " + d.createdAtLabel() + " " + (d.createdAt() == null ? "" : d.createdAt())).contains(q))
                 .filter(d -> captured == null || (d.createdAt() != null && !d.createdAt().isBefore(captured[0]) && d.createdAt().isBefore(captured[1])))
                 .filter(d -> undated ? d.date().isEmpty() : (selectedPeriod.isEmpty() || d.date().startsWith(selectedPeriod)))
@@ -316,7 +316,7 @@ public class Catalog {
             int total = db.queryForObject("SELECT count(*) FROM documents", Integer.class);
             int pages = Math.max(1, (total + PAGE_SIZE - 1) / PAGE_SIZE);
             int page = Math.max(1, Math.min(requestedPage, pages));
-            List<Doc> docs = db.queryForList("SELECT id FROM documents ORDER BY created_at DESC,rowid DESC LIMIT ? OFFSET ?",
+            List<Doc> docs = db.queryForList("SELECT id FROM documents ORDER BY julianday(created_at) DESC,rowid DESC LIMIT ? OFFSET ?",
                     String.class, PAGE_SIZE, (page - 1) * PAGE_SIZE).stream().map(this::get).toList();
             return new SearchPage(docs, total, page, pages);
         }
