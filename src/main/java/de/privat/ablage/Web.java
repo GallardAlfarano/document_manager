@@ -39,8 +39,11 @@ public class Web {
     @GetMapping("/")
     String index(@RequestParam(defaultValue = "") String q, @RequestParam(defaultValue = "") String period,
                  @RequestParam(defaultValue = "") String main, @RequestParam(defaultValue = "") String type, @RequestParam(defaultValue = "") String tags, @RequestParam(defaultValue = "false") boolean undated,
-                 @RequestParam(defaultValue = "") String createdPeriod, @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "") String subcategory, Model model) {
-        var result = catalog.page(q, period, main, type, tags(tags), undated, createdPeriod, subcategory, page);
+                 @RequestParam(defaultValue = "") String createdPeriod, @RequestParam(defaultValue = "1") int page, @RequestParam(defaultValue = "") String subcategory, @RequestParam(defaultValue = "createdAt") String sort,
+                 @RequestParam(defaultValue = "desc") String direction, Model model) {
+        var result = catalog.page(q, period, main, type, tags(tags), undated, createdPeriod, subcategory, page, sort, direction);
+        model.addAttribute("sort", sort);
+        model.addAttribute("direction", direction);
         model.addAttribute("docs", result.docs());
         model.addAttribute("result", result);
         model.addAttribute("createdPeriod", createdPeriod);

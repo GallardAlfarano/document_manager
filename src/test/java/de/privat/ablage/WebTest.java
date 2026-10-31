@@ -412,4 +412,17 @@ class WebTest {
         mvc.perform(post("/check/empty-directories").with(csrf())).andExpect(status().is3xxRedirection())
             .andExpect(flash().attribute("notice","0 leere Ordner gelöscht."));
     }
+
+    @Test void sortingLinksPreserveFiltersAndToggleDirection() throws Exception {
+        document("Sortierprobe.pdf");
+        String html=mvc.perform(get("/").param("q","Sortierprobe").param("main","Finanzen")
+                .param("sort","filename").param("direction","asc").param("page","8"))
+            .andExpect(status().isOk()).andExpect(model().attribute("sort","filename"))
+            .andExpect(model().attribute("direction","asc")).andReturn().getResponse().getContentAsString();
+        assertThat(html).contains("aria-sort=\"ascending\"", "name=\"sort\" value=\"filename\"", "direction=desc", "q=Sortierprobe", "main=Finanzen");
+        for (String field:java.util.List.of("filename","sender","date","createdAt","main","subcategory","type","tags"))
+            mvc.perform(get("/").param("sort",field).param("direction","desc")).andExpect(status().isOk());
+        mvc.perform(get("/").param("sort","invalid")).andExpect(status().isBadRequest());
+        mvc.perform(get("/").param("direction","invalid")).andExpect(status().isBadRequest());
+    }
 }

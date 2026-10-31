@@ -697,4 +697,28 @@ class CatalogTest {
         assertThat(Files.readString(unknown)).isEqualTo("Nicht katalogisiert");
         assertThat(temp.resolve("test.sqlite")).exists();
     }
+
+    @Test void sortingAppliesBeforePaginationAndAfterFilters() {
+        for (int i=34;i>=0;i--) capturedFixture(String.format("Sort %02d.pdf",i),"2026-10-01T12:00:00Z","2025-01-01");
+        var first=catalog.page("Sort","2025","Finanzen","Info",List.of(),false,"2026","",1,"filename","asc");
+        var second=catalog.page("Sort","2025","Finanzen","Info",List.of(),false,"2026","",2,"filename","asc");
+        assertThat(first.docs()).hasSize(30);
+        assertThat(first.docs().getFirst().filename()).isEqualTo("Sort 00.pdf");
+        assertThat(first.docs().getLast().filename()).isEqualTo("Sort 29.pdf");
+        assertThat(second.docs()).hasSize(5);
+        assertThat(second.docs().getFirst().filename()).isEqualTo("Sort 30.pdf");
+        assertThat(catalog.page("","","","",List.of(),false,"","",1,"filename","desc").docs().getFirst().filename()).isEqualTo("Sort 34.pdf");
+    }
+    @Test void dateAndCaptureSortingKeepUnknownValuesLastInBothDirections() {
+        var old=capturedFixture("z.pdf",null,"");
+        var early=capturedFixture("a.pdf","2026-10-01T12:00:00Z","2025-01-01");
+        var late=capturedFixture("B.pdf","2026-10-01T12:00:00.001Z","2026-01-01");
+        for (String field:List.of("date","createdAt")) {
+            assertThat(catalog.page("","","","",List.of(),false,"","",1,field,"asc").docs()).containsExactly(early,late,old);
+            assertThat(catalog.page("","","","",List.of(),false,"","",1,field,"desc").docs()).containsExactly(late,early,old);
+        }
+        assertThat(catalog.page("","","","",List.of(),false,"","",1,"filename","asc").docs()).containsExactly(early,late,old);
+        assertThatThrownBy(()->catalog.page("","","","",List.of(),false,"","",1,"date; DROP TABLE documents","asc")).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(()->new Catalog.Sorting("date","invalid")).isInstanceOf(IllegalArgumentException.class);
+    }
 }

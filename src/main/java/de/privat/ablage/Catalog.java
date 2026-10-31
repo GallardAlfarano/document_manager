@@ -273,8 +273,43 @@ public class Catalog {
 
     public SearchPage page(String query, String period, String main, String type, List<String> tags,
                            boolean undated, String createdPeriod, String subcategory, int requestedPage) {
+        return page(query, period, main, type, tags, undated, createdPeriod, subcategory, requestedPage, "createdAt", "desc");
+    }
+
+    public record Sorting(String field, String direction) {
+        public Sorting {
+            if (!List.of("filename", "sender", "date", "createdAt", "main", "subcategory", "type", "tags").contains(field)
+                    || !List.of("asc", "desc").contains(direction))
+                throw new IllegalArgumentException("Ungültige Sortierung.");
+        }
+
+        private Comparator<Doc> comparator() {
+            Comparator<String> text = direction.equals("desc") ? Comparator.reverseOrder() : Comparator.naturalOrder();
+            if (field.equals("createdAt")) {
+                Comparator<Instant> time = direction.equals("desc") ? Comparator.reverseOrder() : Comparator.naturalOrder();
+                return Comparator.comparing(Doc::createdAt, Comparator.nullsLast(time));
+            }
+            return Comparator.comparing((Doc d) -> switch (field) {
+                case "filename" -> key(d.filename());
+                case "sender" -> key(d.sender());
+                case "date" -> d.date().isEmpty() ? null : d.date();
+                case "createdAt" -> d.createdAt() == null ? null : d.createdAt().toString();
+                case "main" -> key(d.main());
+                case "subcategory" -> d.subcategory().isEmpty() ? null : key(d.subcategory());
+                case "type" -> key(d.type());
+                case "tags" -> d.tags().isEmpty() ? null : d.tags().stream().map(Catalog::key).sorted().collect(java.util.stream.Collectors.joining("; "));
+                default -> throw new IllegalStateException();
+            }, Comparator.nullsLast(text));
+        }
+    }
+
+    public SearchPage page(String query, String period, String main, String type, List<String> tags,
+                           boolean undated, String createdPeriod, String subcategory, int requestedPage,
+                           String sort, String direction) {
+        var sorting = new Sorting(sort, direction);
         // Die normale Startseite lädt nur die benötigten 30 Datensätze.
-        if ((query == null || query.isBlank()) && (period == null || period.isBlank())
+        if (sort.equals("createdAt") && direction.equals("desc")
+                && (query == null || query.isBlank()) && (period == null || period.isBlank())
                 && (main == null || main.isBlank()) && (type == null || type.isBlank())
                 && (tags == null || tags.isEmpty()) && !undated && (createdPeriod == null || createdPeriod.isBlank())
                 && (subcategory == null || subcategory.isBlank())) {
@@ -285,7 +320,8 @@ public class Catalog {
                     String.class, PAGE_SIZE, (page - 1) * PAGE_SIZE).stream().map(this::get).toList();
             return new SearchPage(docs, total, page, pages);
         }
-        List<Doc> matches = search(query, period, main, type, tags, undated, createdPeriod, subcategory);
+        List<Doc> matches = search(query, period, main, type, tags, undated, createdPeriod, subcategory)
+                .stream().sorted(sorting.comparator()).toList();
         int pages = Math.max(1, (matches.size() + PAGE_SIZE - 1) / PAGE_SIZE);
         int page = Math.max(1, Math.min(requestedPage, pages));
         int start = (page - 1) * PAGE_SIZE;
